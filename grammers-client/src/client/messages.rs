@@ -220,6 +220,24 @@ impl MessageIter {
         )
     }
 
+    /// set the limit of messages to fetch per request
+    pub fn set_limit(mut self, records: i32) -> Self {
+        if records <= 0 {
+            self.request.limit = 0;
+        } else if records >= MAX_LIMIT as i32 {
+            self.request.limit = MAX_LIMIT as i32;
+        } else {
+            self.request.limit = records;
+        }
+        self
+    }
+
+    /// Changes the message offset.
+    pub fn add_offset(mut self, offset: i32) -> Self {
+        self.request.add_offset = offset;
+        self
+    }
+
     /// Changes the message identifier upper bound.
     pub fn offset_id(mut self, offset: i32) -> Self {
         self.request.offset_id = offset;
@@ -229,6 +247,22 @@ impl MessageIter {
     /// Changes the message send date upper bound.
     pub fn max_date(mut self, offset: i32) -> Self {
         self.request.offset_date = offset;
+        self
+    }
+
+    /// We set the max_id for the request.
+    /// This is useful for fetching messages in a specific range.
+    /// For example, fetching messages from a specific message id to the latest message.
+    pub fn max_id(mut self, max_id: i32) -> Self {
+        self.request.max_id = max_id;
+        self
+    }
+
+    /// We set the min_id for the request.
+    /// This is useful for fetching messages in a specific range.
+    /// For example, fetching messages from the oldest message to a specific message id.
+    pub fn min_id(mut self, min_id: i32) -> Self {
+        self.request.min_id = min_id;
         self
     }
 
@@ -293,7 +327,37 @@ impl SearchIter {
         )
     }
 
-    /// Changes the message identifier upper bound.
+    /// Sets an additional offset to add to the starting point of the search.
+    ///
+    /// This can be used to skip a certain number of messages from the beginning
+    /// of the search results.
+    ///
+    /// # Arguments
+    /// * `offset` - The number of messages to skip
+    pub fn add_offset(mut self, offset: i32) -> Self {
+        self.request.add_offset = offset;
+        self
+    }
+
+    /// Sets the top message ID for the search context.
+    ///
+    /// This is typically used in forum chats to specify which topic thread
+    /// to search within.
+    ///
+    /// # Arguments
+    /// * `top_msg_id` - The ID of the top message that defines the search context
+    pub fn set_top_msg_id(mut self, top_msg_id: i32) -> Self {
+        self.request.top_msg_id = Some(top_msg_id);
+        self
+    }
+
+    /// Sets the message ID to use as the starting offset for the search.
+    ///
+    /// The search will begin from this message ID and work backwards (for older messages)
+    /// or forwards depending on the search direction.
+    ///
+    /// # Arguments
+    /// * `offset` - The message ID to start searching from
     pub fn offset_id(mut self, offset: i32) -> Self {
         self.request.offset_id = offset;
         self
@@ -348,6 +412,22 @@ impl SearchIter {
     /// ```
     pub fn max_date(mut self, date_time: &DateTime<FixedOffset>) -> Self {
         self.request.max_date = date_time.timestamp() as i32;
+        self
+    }
+
+    /// We set the max_id for the request.
+    /// This is useful for fetching messages in a specific range.
+    /// For example, fetching messages from a specific message id to the latest message.
+    pub fn max_id(mut self, max_id: i32) -> Self {
+        self.request.max_id = max_id;
+        self
+    }
+
+    /// We set the min_id for the request.
+    /// This is useful for fetching messages in a specific range.
+    /// For example, fetching messages from the oldest message to a specific message id.
+    pub fn min_id(mut self, min_id: i32) -> Self {
+        self.request.min_id = min_id;
         self
     }
 
