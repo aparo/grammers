@@ -206,15 +206,63 @@ impl Client {
         downloadable: &D,
         path: P,
     ) -> Result<(), io::Error> {
-        // Concurrent downloader
-        if let Some((location, size)) = downloadable
-            .to_raw_input_location()
-            .zip(downloadable.size())
-        {
-            if size > BIG_FILE_SIZE {
-                return self
-                    .download_media_concurrent(location, size, path, WORKER_COUNT)
-                    .await;
+        if let Some(input_file) = downloadable.to_raw_input_location() {
+            // Concurrent downloader
+            if let Some(size) = downloadable.size() {
+                if size > BIG_FILE_SIZE {
+                    return self
+                        .download_media_concurrent(input_file, size, path, WORKER_COUNT)
+                        .await;
+                }
+            }
+        }
+
+        if downloadable.to_raw_input_location().is_none() {
+            if let Some(data) = downloadable.to_data() {
+                if !data.is_empty() {
+                    let mut file = fs::File::create(&path).await.unwrap();
+                    file.write_all(&data).await.unwrap();
+                }
+
+                return Ok(());
+            }
+        }
+
+        let mut download = self.iter_download(downloadable);
+        Client::load(path, &mut download).await
+    }
+
+    /// Downloads a media file into the specified path with optional concurrency.
+    ///
+    /// If the file already exists, it will be overwritten.
+    ///
+    /// This is a small wrapper around [`Client::iter_download`] for the common case of
+    /// wanting to save the file locally.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn f(downloadable: grammers_client::types::Downloadable, client: grammers_client::Client) -> Result<(), Box<dyn std::error::Error>> {
+    /// client.download_media(&downloadable, "/home/username/photos/holidays.jpg").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn download_media_with_concurrent<D: Downloadable, P: AsRef<Path>>(
+        &self,
+        downloadable: &D,
+        path: P,
+        concurrent: bool,
+    ) -> Result<(), io::Error> {
+        if concurrent {
+            if let Some(input_file) = downloadable.to_raw_input_location() {
+                // Concurrent downloader
+                if let Some(size) = downloadable.size() {
+                    if size as usize > BIG_FILE_SIZE {
+                        return self
+                            .download_media_concurrent(input_file, size, path, WORKER_COUNT)
+                            .await;
+                    }
+                }
             }
         }
 

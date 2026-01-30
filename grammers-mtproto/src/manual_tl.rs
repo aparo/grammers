@@ -72,7 +72,7 @@ impl Deserializable for Message {
         let len = i32::deserialize(buf)?;
         assert!(len >= 0);
         let len = len as usize;
-        assert!(len < MessageContainer::MAXIMUM_SIZE);
+        // assert!(len < MessageContainer::MAXIMUM_SIZE);
         let mut body = vec![0; len];
         buf.read_exact(&mut body)?;
 
