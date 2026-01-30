@@ -40,11 +40,10 @@ async fn async_main() -> Result<()> {
     let api_id = env!("TG_ID").parse().expect("TG_ID invalid");
     let peer_name = env::args().nth(1).expect("peer name missing");
 
-    let session = Arc::new(SqliteSession::open(SESSION_FILE)?);
+    let session = Arc::new(SqliteSession::open(SESSION_FILE).await?);
 
-    let pool = SenderPool::new(Arc::clone(&session), api_id);
-    let client = Client::new(&pool);
-    let SenderPool { runner, .. } = pool;
+    let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
+    let client = Client::new(handle);
     let _ = tokio::spawn(runner.run());
 
     if !client.is_authorized().await? {
@@ -74,7 +73,9 @@ async fn async_main() -> Result<()> {
     let maybe_peer = client
         .resolve_username(peer_name.as_str())
         .await?
-        .and_then(|peer| peer.to_ref());
+        .ok_or("no peer with username")?
+        .to_ref()
+        .await;
 
     let peer = maybe_peer.unwrap_or_else(|| panic!("Peer {peer_name} could not be found"));
 

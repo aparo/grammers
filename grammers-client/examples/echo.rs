@@ -38,7 +38,7 @@ async fn handle_update(client: Client, update: Update) {
                 sleep(Duration::from_secs(5)).await;
             }
             if let Err(e) = client
-                .send_message(peer.to_ref().unwrap(), message.text())
+                .send_message(peer.to_ref().await.unwrap(), message.text())
                 .await
             {
                 println!("Failed to respond! {e}");
@@ -57,15 +57,14 @@ async fn async_main() -> Result {
     let api_id = env!("TG_ID").parse().expect("TG_ID invalid");
     let token = env::args().nth(1).expect("token missing");
 
-    let session = Arc::new(SqliteSession::open(SESSION_FILE)?);
+    let session = Arc::new(SqliteSession::open(SESSION_FILE).await?);
 
-    let pool = SenderPool::new(Arc::clone(&session), api_id);
-    let client = Client::new(&pool);
     let SenderPool {
         runner,
         updates,
         handle,
-    } = pool;
+    } = SenderPool::new(Arc::clone(&session), api_id);
+    let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
     if !client.is_authorized().await? {
@@ -80,13 +79,15 @@ async fn async_main() -> Result {
     // To guarantee that all handlers run to completion, they're stored in this set.
     // You can use `task::spawn` if you don't care about dropping unfinished handlers midway.
     let mut handler_tasks = JoinSet::new();
-    let mut updates = client.stream_updates(
-        updates,
-        UpdatesConfiguration {
-            catch_up: true,
-            ..Default::default()
-        },
-    );
+    let mut updates = client
+        .stream_updates(
+            updates,
+            UpdatesConfiguration {
+                catch_up: true,
+                ..Default::default()
+            },
+        )
+        .await;
     loop {
         // Empty finished handlers (you could look at their return value here too.)
         while let Some(_) = handler_tasks.try_join_next() {}
@@ -106,7 +107,7 @@ async fn async_main() -> Result {
     }
 
     println!("Saving session file...");
-    updates.sync_update_state(); // dropping `updates` would also sync it, which you want before saving session
+    updates.sync_update_state().await; // you usually want this before closing the session
 
     // Pool's `run()` won't finish until all handles are dropped or quit is called.
     // Here there are at least three handles alive: `handle`, `client` and `updates`

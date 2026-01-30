@@ -115,11 +115,12 @@ impl User {
     /// Convert the user to its reference.
     ///
     /// This is only possible if the peer would be usable on all methods or if it is in the session cache.
-    pub fn to_ref(&self) -> Option<PeerRef> {
+    pub async fn to_ref(&self) -> Option<PeerRef> {
         let id = self.id();
-        self.auth()
-            .map(|auth| PeerRef { id, auth })
-            .or_else(|| self.client.0.session.peer_ref(id))
+        match self.auth() {
+            Some(auth) => Some(PeerRef { id, auth }),
+            None => self.client.0.session.peer_ref(id).await,
+        }
     }
 
     /// Return the first name of this user.
@@ -275,6 +276,16 @@ impl User {
     /// Has this user been flagged for trying to scam other people?
     pub fn scam(&self) -> bool {
         self.user().map(|u| u.scam).unwrap_or(false)
+    }
+
+    /// Does this user have a Telegram Premium subscription?
+    pub fn is_premium(&self) -> bool {
+        self.user().map(|u| u.premium).unwrap_or(false)
+    }
+
+    /// Has this user been flagged as a fake account?
+    pub fn fake(&self) -> bool {
+        self.user().map(|u| u.fake).unwrap_or(false)
     }
 
     /// The reason(s) why this user is restricted, could be empty.

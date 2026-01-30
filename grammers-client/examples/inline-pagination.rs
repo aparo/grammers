@@ -121,13 +121,14 @@ async fn async_main() -> Result {
     let api_id = env!("TG_ID").parse().expect("TG_ID invalid");
     let token = env::args().nth(1).expect("token missing");
 
-    let session = Arc::new(SqliteSession::open(SESSION_FILE)?);
+    let session = Arc::new(SqliteSession::open(SESSION_FILE).await?);
 
-    let pool = SenderPool::new(Arc::clone(&session), api_id);
-    let client = Client::new(&pool);
     let SenderPool {
-        runner, updates, ..
-    } = pool;
+        runner,
+        handle,
+        updates,
+    } = SenderPool::new(Arc::clone(&session), api_id);
+    let client = Client::new(handle);
     let _ = tokio::spawn(runner.run());
 
     if !client.is_authorized().await? {
@@ -137,7 +138,7 @@ async fn async_main() -> Result {
     }
 
     println!("Waiting for messages...");
-    let mut updates = client.stream_updates(updates, Default::default());
+    let mut updates = client.stream_updates(updates, Default::default()).await;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
