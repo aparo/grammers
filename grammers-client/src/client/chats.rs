@@ -36,33 +36,6 @@ const MAX_PARTICIPANT_LIMIT: usize = 200;
 const MAX_PHOTO_LIMIT: usize = 100;
 const KICK_BAN_DURATION: i32 = 60; // in seconds, in case the second request fails
 
-/// A categorized search result item from [`Client::search_peer`].
-#[derive(Debug, Clone)]
-pub enum PeerSearchItem {
-    /// A user from the account's contact list.
-    Contact(Peer),
-    /// A peer from an existing dialog (non-contact user, group, or channel).
-    Dialog(Peer),
-    /// A peer found via global search.
-    Global(Peer),
-}
-
-impl PeerSearchItem {
-    /// Get a reference to the underlying peer.
-    pub fn peer(&self) -> &Peer {
-        match self {
-            Self::Contact(p) | Self::Dialog(p) | Self::Global(p) => p,
-        }
-    }
-
-    /// Unwrap into the underlying peer, discarding the category.
-    pub fn into_peer(self) -> Peer {
-        match self {
-            Self::Contact(p) | Self::Dialog(p) | Self::Global(p) => p,
-        }
-    }
-}
-
 enum ParticipantIterInner {
     Empty,
     Chat {
@@ -263,26 +236,24 @@ pub struct ProfilePhotoIter(ProfilePhotoIterInner);
 
 impl ProfilePhotoIter {
     fn new(client: &Client, peer: PeerRef) -> Self {
-        Self(
-            if matches!(peer.id.kind(), PeerKind::User | PeerKind::UserSelf) {
-                ProfilePhotoIterInner::User(IterBuffer::from_request(
-                    client,
-                    MAX_PHOTO_LIMIT,
-                    tl::functions::photos::GetUserPhotos {
-                        user_id: peer.into(),
-                        offset: 0,
-                        max_id: 0,
-                        limit: 0,
-                    },
-                ))
-            } else {
-                ProfilePhotoIterInner::Chat(
-                    client
-                        .search_messages(peer)
-                        .filter(tl::enums::MessagesFilter::InputMessagesFilterChatPhotos),
-                )
-            },
-        )
+        Self(if matches!(peer.id.kind(), PeerKind::User) {
+            ProfilePhotoIterInner::User(IterBuffer::from_request(
+                client,
+                MAX_PHOTO_LIMIT,
+                tl::functions::photos::GetUserPhotos {
+                    user_id: peer.into(),
+                    offset: 0,
+                    max_id: 0,
+                    limit: 0,
+                },
+            ))
+        } else {
+            ProfilePhotoIterInner::Chat(
+                client
+                    .search_messages(peer)
+                    .filter(tl::enums::MessagesFilter::InputMessagesFilterChatPhotos),
+            )
+        })
     }
 
     /// Determines how many profile photos there are in total.
@@ -422,81 +393,6 @@ impl Client {
         let peer_id = PeerId::from(peer);
 
         Ok(peers.take(peer_id))
-    }
-
-    /// Search for peers (users, groups, channels, bots) by name or username.
-    ///
-    /// Returns a `Vec<PeerSearchItem>` where each item is categorized as:
-    /// - [`PeerSearchItem::Contact`]: a user from your contact list
-    /// - [`PeerSearchItem::Dialog`]: a peer from an existing dialog (non-contact)
-    /// - [`PeerSearchItem::Global`]: a peer found via global search
-    ///
-    /// Found peers are automatically cached to the session for later use.
-    ///
-    /// This method is generally less rate-limited than [`Client::resolve_username`] and can be
-    /// used as a cross-check when `resolve_username` returns `None` to distinguish "username
-    /// does not exist" from "account is silently rate-limited".
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # async fn f(client: grammers_client::Client) -> Result<(), Box<dyn std::error::Error>> {
-    /// use grammers_client::PeerSearchItem;
-    ///
-    /// let results = client.search_peer("username", 5).await?;
-    /// for item in &results {
-    ///     match item {
-    ///         PeerSearchItem::Contact(peer) => println!("Contact: {}", peer.name()),
-    ///         PeerSearchItem::Dialog(peer) => println!("Dialog: {}", peer.name()),
-    ///         PeerSearchItem::Global(peer) => println!("Global: {}", peer.name()),
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn search_peer(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<PeerSearchItem>, InvocationError> {
-        let tl::types::contacts::Found {
-            my_results,
-            results,
-            chats,
-            users,
-        } = match self
-            .invoke(&tl::functions::contacts::Search {
-                q: query.into(),
-                limit: limit as i32,
-            })
-            .await?
-        {
-            tl::enums::contacts::Found::Found(f) => f,
-        };
-
-        let peer_map = self.build_peer_map(users, chats).await;
-
-        let classify_my_result = |peer: Peer| -> PeerSearchItem {
-            match &peer {
-                Peer::User(user) if user.contact() => PeerSearchItem::Contact(peer),
-                _ => PeerSearchItem::Dialog(peer),
-            }
-        };
-
-        let mut items: Vec<PeerSearchItem> = my_results
-            .into_iter()
-            .filter_map(|p| peer_map.get(PeerId::from(p)).cloned())
-            .map(classify_my_result)
-            .collect();
-
-        items.extend(
-            results
-                .into_iter()
-                .filter_map(|p| peer_map.get(PeerId::from(p)).cloned())
-                .map(PeerSearchItem::Global),
-        );
-
-        Ok(items)
     }
 
     /// Fetch full information about the currently logged-in user.
@@ -725,20 +621,20 @@ impl Client {
     /// ```
     pub async fn resolve_peer<C: Into<PeerRef>>(&self, peer: C) -> Result<Peer, InvocationError> {
         let peer = peer.into();
-        Ok(match peer.id.kind() {
-            PeerKind::User | PeerKind::UserSelf => {
-                let mut res = self
+        let mut peers = match peer.id.kind() {
+            PeerKind::User => {
+                let res = self
                     .invoke(&tl::functions::users::GetUsers {
                         id: vec![peer.into()],
                     })
                     .await?;
-                if res.len() != 1 {
+                if res.len() > 1 {
                     panic!("fetching only one user should exactly return one user");
                 }
-                Peer::from_user(self, res.pop().unwrap())
+                self.build_peer_map(res, Vec::new()).await
             }
             PeerKind::Chat => {
-                let mut res = match self
+                let res = match self
                     .invoke(&tl::functions::messages::GetChats {
                         id: vec![peer.into()],
                     })
@@ -747,13 +643,13 @@ impl Client {
                     tl::enums::messages::Chats::Chats(chats) => chats.chats,
                     tl::enums::messages::Chats::Slice(chat_slice) => chat_slice.chats,
                 };
-                if res.len() != 1 {
+                if res.len() > 1 {
                     panic!("fetching only one chat should exactly return one chat");
                 }
-                Peer::from_raw(self, res.pop().unwrap())
+                self.build_peer_map(Vec::new(), res).await
             }
             PeerKind::Channel => {
-                let mut res = match self
+                let res = match self
                     .invoke(&tl::functions::channels::GetChannels {
                         id: vec![peer.into()],
                     })
@@ -762,12 +658,13 @@ impl Client {
                     tl::enums::messages::Chats::Chats(chats) => chats.chats,
                     tl::enums::messages::Chats::Slice(chat_slice) => chat_slice.chats,
                 };
-                if res.len() != 1 {
-                    panic!("fetching only one chat should exactly return one chat");
+                if res.len() > 1 {
+                    panic!("fetching only one channel should exactly return one chat");
                 }
-                Peer::from_raw(self, res.pop().unwrap())
+                self.build_peer_map(Vec::new(), res).await
             }
-        })
+        };
+        peers.take(peer.id).ok_or(InvocationError::Dropped)
     }
 
     /// Get permissions of participant `user` from chat `chat`.
@@ -798,7 +695,7 @@ impl Client {
                 tl::enums::InputUser::FromMessage(user) => user.user_id,
                 tl::enums::InputUser::UserSelf => {
                     let me = self.get_me().await?;
-                    me.id().bare_id()
+                    me.id().bare_id_unchecked()
                 }
                 tl::enums::InputUser::Empty => return Err(InvocationError::Dropped),
             };
@@ -930,7 +827,7 @@ impl Client {
         let channel = chat.into();
         Ok(updates_to_chat(
             self,
-            Some(chat.id.bare_id()),
+            chat.id.bare_id(),
             self.invoke(&tl::functions::channels::JoinChannel { channel })
                 .await?,
         ))

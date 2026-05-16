@@ -111,6 +111,8 @@ impl InputMedia {
                 file: file.raw,
                 stickers: None,
                 ttl_seconds: self.media_ttl,
+                live_photo: false,
+                video: None,
             })
             .into(),
         );
@@ -159,6 +161,20 @@ impl InputMedia {
             })
             .into(),
         );
+        self
+    }
+
+    /// Include a media in the message using the raw TL types.
+    ///
+    /// You can use this to send any media using the raw TL types that don't have
+    /// a specific method in this builder such as Dice, Polls, etc.
+    ///
+    /// This can also be used to send media with a file reference, see `InputMediaDocument`
+    /// and `InputMediaPhoto` in the `grammers-tl-types` crate.
+    ///
+    /// The text will be the caption of the media, which may be empty for no caption.
+    pub fn media<M: Into<tl::enums::InputMedia>>(mut self, media: M) -> Self {
+        self.media = Some(media.into());
         self
     }
 

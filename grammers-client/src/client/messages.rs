@@ -168,7 +168,11 @@ impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Me
             }
             Messages::Slice(m) => {
                 // Can't rely on `count(messages) < limit` as the stop condition.
-                // See https://github.com/LonamiWebs/Telethon/issues/3949 for more.
+                // See https://t.me/tdlibchat/57257 for discussion. As an example:
+                // offset_id 132002, limit 4 => we get msg 131999 & 131998
+                // offset_id 132002, limit 3 => we get msg 131999
+                // offset_id 132002, limit 2 => we get msg 132000
+                // offset_id 132002, limit 1 => we get msg 132001
                 //
                 // If the highest fetched message ID is lower than or equal to the limit,
                 // there can't be more messages after (highest ID - limit), because the
@@ -605,6 +609,7 @@ impl Client {
                         quote_offset: None,
                         monoforum_peer_id: None,
                         todo_item_id: None,
+                        poll_option: None,
                     }
                     .into()
                 }),
@@ -643,6 +648,7 @@ impl Client {
                         quote_offset: None,
                         monoforum_peer_id: None,
                         todo_item_id: None,
+                        poll_option: None,
                     }
                     .into()
                 }),
@@ -667,7 +673,7 @@ impl Client {
 
         Ok(match updates {
             tl::enums::Updates::UpdateShortSentMessage(updates) => {
-                let peer = if peer.id.kind() == PeerKind::UserSelf {
+                let peer = if peer.id.bare_id().is_none() {
                     // from_raw_short_updates needs the peer ID
                     self.0.session.peer_ref(peer.id).await.unwrap()
                 } else {
@@ -799,6 +805,7 @@ impl Client {
                         quote_offset: None,
                         monoforum_peer_id: None,
                         todo_item_id: None,
+                        poll_option: None,
                     }
                     .into()
                 }),
@@ -1016,7 +1023,7 @@ impl Client {
         // TODO shouldn't this method take in a message id anyway?
         let peer_id = message.peer_id();
         let peer = match peer_id.kind() {
-            PeerKind::User | PeerKind::UserSelf | PeerKind::Chat => PeerRef {
+            PeerKind::User | PeerKind::Chat => PeerRef {
                 id: peer_id,
                 auth: PeerAuth::default(), // unused, so no need to bother fetching it
             },

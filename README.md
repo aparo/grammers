@@ -69,6 +69,15 @@ on your issues or pull requests. Please do call me out if you think my behaviour
 at any time. I will try to keep the discussion as technical as possible. Similarly, I will not
 tolerate poor behaviour from your side towards other people (including myself).
 
+**Please only submit issues and pull requests authored entirely by you or other fellow humans.**
+If you don't feel capable of authoring code yourself, I encourage you to still try, as I believe
+that's the best way to learn and get better. If you're still not comfortable, please submit a
+feature-request instead, for discussion, so that someone else can implement it instead.
+
+You may use translation assistance if writing English is also not something you're comfortable with.
+But please choose a translation tool that doesn't overly try to rewrite and twist your thoughts.
+Browsers like Firefox have a decently good offline translator built-in that you may use.
+
 It is recommended to run these commands to make the Git experience a bit nicer:
 
 ```sh
@@ -85,8 +94,8 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
 
-[build real projects]: https://github.com/Lonami/grammers/wiki/Real-world-projects
-[RSS bots]: https://github.com/Lonami/srsrssrsbot
+[build real projects]: https://codeberg.org/Lonami/grammers/wiki/Real-world-projects
+[RSS bots]: https://codeberg.org/Lonami/srsrssrsbot
 [client examples]: grammers-client/examples
 [Mobile Transport Protocol]: https://core.telegram.org/mtproto
 [Type Language]: https://core.telegram.org/mtproto/TL
@@ -108,9 +117,9 @@ dual licensed as above, without any additional terms or conditions.
 [scrape-docs]: bin/scrape-docs/
 [tl-to-json]: bin/tl-to-json/
 [tl-json]: https://core.telegram.org/schema/json
-[cargo-crev]: https://github.com/crev-dev/cargo-crev
+[cargo-crev]: https://crates.io/crates/cargo-crev
 [LICENSE-APACHE]: LICENSE-APACHE
 [LICENSE-MIT]: LICENSE-MIT
-[contribute code]: https://github.com/Lonami/grammers/compare
-[reporting issues]: https://github.com/Lonami/grammers/issues/new
-[extensions to grammers]: https://github.com/Lonami/grammers/wiki/Client-extensions
+[contribute code]: https://codeberg.org/Lonami/srsrssrsbot/pulls
+[reporting issues]: https://codeberg.org/Lonami/srsrssrsbot/issues/new
+[extensions to grammers]: https://codeberg.org/Lonami/grammers/wiki/Client-extensions

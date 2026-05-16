@@ -341,6 +341,10 @@ pub fn generate_html_message(message: &str, entities: &[tl::enums::MessageEntity
                 ));
             }
             ME::CustomEmoji(_) => {}
+            ME::FormattedDate(_) => {}
+            ME::DiffInsert(_) => {}
+            ME::DiffReplace(_) => {}
+            ME::DiffDelete(_) => {}
         });
 
     inject_into_message(message, insertions)

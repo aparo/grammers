@@ -280,15 +280,17 @@ impl Session for SqliteSession {
             let map_row = |row: libsql::Row| {
                 let subtype = row.get::<Option<i64>>(2)?.map(|s| s as u8);
                 Ok(match peer.kind() {
-                    PeerKind::User | PeerKind::UserSelf => PeerInfo::User {
-                        id: PeerId::user_unchecked(row.get::<i64>(0)?).bare_id(),
+                    PeerKind::User => PeerInfo::User {
+                        id: PeerId::user_unchecked(row.get::<i64>(0)?).bare_id_unchecked(),
                         auth: row.get::<Option<i64>>(1)?.map(PeerAuth::from_hash),
                         bot: subtype.map(|s| s & PeerSubtype::UserBot as u8 != 0),
                         is_self: subtype.map(|s| s & PeerSubtype::UserSelf as u8 != 0),
                     },
-                    PeerKind::Chat => PeerInfo::Chat { id: peer.bare_id() },
+                    PeerKind::Chat => PeerInfo::Chat {
+                        id: peer.bare_id_unchecked(),
+                    },
                     PeerKind::Channel => PeerInfo::Channel {
-                        id: peer.bare_id(),
+                        id: peer.bare_id_unchecked(),
                         auth: row.get::<Option<i64>>(1)?.map(PeerAuth::from_hash),
                         kind: subtype.and_then(|s| {
                             if (s & PeerSubtype::Gigagroup as u8) == PeerSubtype::Gigagroup as u8 {
@@ -305,18 +307,18 @@ impl Session for SqliteSession {
                 })
             };
 
-            if peer.kind() == PeerKind::UserSelf {
+            if let Some(peer_id) = peer.bot_api_dialog_id() {
                 db.fetch_one(
-                    "SELECT * FROM peer_info WHERE subtype & :type LIMIT 1",
-                    named_params! {":type": PeerSubtype::UserSelf as i64},
+                    "SELECT * FROM peer_info WHERE peer_id = :peer_id LIMIT 1",
+                    named_params! {":peer_id": peer_id},
                     map_row,
                 )
                 .await
                 .unwrap()
             } else {
                 db.fetch_one(
-                    "SELECT * FROM peer_info WHERE peer_id = :peer_id LIMIT 1",
-                    named_params! {":peer_id": peer.bot_api_dialog_id()},
+                    "SELECT * FROM peer_info WHERE subtype & :type LIMIT 1",
+                    named_params! {":type": PeerSubtype::UserSelf as i64},
                     map_row,
                 )
                 .await
@@ -328,6 +330,13 @@ impl Session for SqliteSession {
     fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, ()> {
         let peer = peer.clone();
         Box::pin(async move {
+            let peer = if let Some(mut existing_peer) = self.peer(peer.id()).await {
+                existing_peer.extend_info(&peer);
+                existing_peer
+            } else {
+                peer
+            };
+
             let db = self.database.lock().await;
             let stmt =
                 db.0.prepare("INSERT OR REPLACE INTO peer_info VALUES (:peer_id, :hash, :subtype)")
@@ -350,7 +359,7 @@ impl Session for SqliteSession {
                 }),
             };
             let mut params = vec![];
-            let peer_id = peer.id().bot_api_dialog_id();
+            let peer_id = peer.id().bot_api_dialog_id_unchecked();
             params.push((":peer_id".to_owned(), peer_id));
             let hash = peer.auth().unwrap_or_default().hash();
             if peer.auth().is_some() {

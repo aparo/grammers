@@ -79,6 +79,7 @@ impl Message {
                 id: updates.id,
                 from_id: None, // TODO self
                 from_boosts_applied: None,
+                from_rank: None,
                 peer_id: peer.id.into(),
                 saved_peer_id: None,
                 fwd_from: None,
@@ -97,6 +98,7 @@ impl Message {
                         quote_entities: None,
                         quote_offset: None,
                         todo_item_id: None,
+                        poll_option: None,
                     }
                     .into()
                 }),
@@ -116,6 +118,7 @@ impl Message {
                 reactions: None,
                 quick_reply_shortcut_id: None,
                 via_business_bot_id: None,
+                guestchat_via_from: None,
                 offline: false,
                 effect: None,
                 factcheck: None,
@@ -269,7 +272,7 @@ impl Message {
             // Incoming messages in private conversations don't include `from_id` since
             // layer 119, but the sender can only be the peer we're in.
             let peer_id = self.peer_id();
-            if matches!(peer_id.kind(), PeerKind::User | PeerKind::UserSelf) {
+            if matches!(peer_id.kind(), PeerKind::User) {
                 if self.outgoing() {
                     Some(PeerId::self_user())
                 } else {

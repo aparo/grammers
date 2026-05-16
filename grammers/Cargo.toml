@@ -6,11 +6,11 @@ license = "MIT OR Apache-2.0"
 description = """
 A messaging application for Telegram.
 """
-homepage = "https://github.com/Lonami/grammers"
-repository = "https://github.com/Lonami/grammers"
+homepage = "https://codeberg.org/Lonami/grammers"
+repository = "https://codeberg.org/Lonami/grammers"
 keywords = ["telegram", "tl"]
 categories = []
 edition = "2024"
 
 [dependencies]
-grammers-client = "0.8.0"
+grammers-client = "0.9.0"

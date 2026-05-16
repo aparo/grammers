@@ -210,14 +210,10 @@ impl Channel {
                 edit_stories: true,
                 delete_stories: true,
                 manage_direct_messages: true,
+                manage_ranks: true,
             }),
             None => None,
         }
-    }
-
-    /// Return whether this channel requires join requests.
-    pub fn requires_join_request(&self) -> bool {
-        self.raw.join_request
     }
 }
 

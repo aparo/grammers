@@ -87,9 +87,6 @@ pub struct MessageBoxes {
     /// Optimization field to quickly query all entries that are currently being fetched.
     pub(super) getting_diff_for: Vec<Key>,
 
-    /// Optimization field to quickly query all entries that have a possible gap.
-    pub(super) possible_gaps: Vec<Key>,
-
     /// Optimization field holding the closest deadline instant.
     pub(super) next_deadline: Instant,
 }
@@ -146,11 +143,23 @@ pub enum UpdatesLike {
     },
     /// Special-case for requests that affect some messages.
     AffectedMessages(tl::types::messages::AffectedMessages),
+    /// Special-case for channel-specific requests that affect messages (e.g.
+    /// `channels.deleteMessages`). The `channel_id` is needed so the `pts` can
+    /// be applied to the correct `Key::Channel` instead of `Key::Common`.
+    AffectedChannelMessages {
+        affected: tl::types::messages::AffectedMessages,
+        channel_id: i64,
+    },
     /// Special-case for requests that lead to users being invited.
     InvitedUsers(tl::types::messages::InvitedUsers),
     /// Indicates that the connection was closed and had to be recreated.
     /// This may mean that an update gap now exists and should be resolved.
     ConnectionClosed,
+    /// Indicates that passively-received updates were malformed.
+    /// Either the constructor identifier was unexpected (possibly a stale channel
+    /// update) or the updates were cut short during deserialization (very unlikely).
+    /// This should be treated as a gap.
+    MalformedUpdates,
 }
 
 // Public interface around the more tightly-packed internal state.

@@ -17,7 +17,7 @@ use grammers_mtproto::mtp::{
 use grammers_mtproto::transport::{self, Transport};
 use grammers_mtproto::{MsgId, authentication};
 use grammers_session::updates::UpdatesLike;
-use grammers_tl_types::{self as tl, Deserializable, RemoteCall};
+use grammers_tl_types::{self as tl, Deserializable, Identifiable, RemoteCall};
 use log::{debug, error, info, trace, warn};
 use tl::Serializable;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -76,6 +76,23 @@ pub(crate) fn generate_random_id() -> i64 {
     }
 
     LAST_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+fn deserialize_updates_like(update: Vec<u8>) -> tl::deserialize::Result<UpdatesLike> {
+    match tl::enums::Updates::from_bytes(&update) {
+        Ok(u) => Ok(UpdatesLike::Updates(u)),
+        Err(e) => {
+            if let Ok(tl::enums::messages::AffectedMessages::Messages(u)) =
+                tl::enums::messages::AffectedMessages::from_bytes(&update)
+            {
+                Ok(UpdatesLike::AffectedMessages(u))
+            } else if let Ok(u) = tl::types::messages::InvitedUsers::from_bytes(&update) {
+                Ok(UpdatesLike::InvitedUsers(u))
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Manages enqueuing requests, matching them to their response, and IO.
@@ -409,48 +426,72 @@ impl<T: Transport, M: Mtp> Sender<T, M> {
         update: Vec<u8>,
     ) {
         match (
-            tl::enums::Updates::from_bytes(&update),
+            deserialize_updates_like(update),
             self.peek_request(msg_id).and_then(|request| {
                 tl::functions::messages::SendMessage::from_bytes(&request.body).ok()
             }),
         ) {
-            (Ok(tl::enums::Updates::UpdateShortSentMessage(u)), Some(request)) => {
+            (
+                Ok(UpdatesLike::Updates(tl::enums::Updates::UpdateShortSentMessage(u))),
+                Some(request),
+            ) => {
                 // As far as I know, UpdateShortSentMessage can only occur from SendMessage.
                 // If that's not the case, new variants with additional requests should be added.
                 updates.push(UpdatesLike::ShortSentMessage { request, update: u })
             }
+            (Ok(UpdatesLike::AffectedMessages(affected)), _) => {
+                // Check if the original request targeted a channel (e.g. channels.deleteMessages).
+                // If so, the pts belongs to that channel, not the common/user pts sequence.
+                let channel_id = self.peek_request(msg_id).and_then(|request| {
+                    let body = &request.body;
+                    if body.len() < 4 {
+                        return None;
+                    }
+                    let constructor_id = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+                    if constructor_id != tl::functions::channels::DeleteMessages::CONSTRUCTOR_ID {
+                        return None;
+                    }
+                    // After the 4-byte constructor ID, the first field is InputChannel.
+                    let channel = tl::enums::InputChannel::from_bytes(&body[4..]).ok()?;
+                    match channel {
+                        tl::enums::InputChannel::Channel(c) => Some(c.channel_id),
+                        _ => None,
+                    }
+                });
+                if let Some(channel_id) = channel_id {
+                    updates.push(UpdatesLike::AffectedChannelMessages {
+                        affected,
+                        channel_id,
+                    });
+                } else {
+                    updates.push(UpdatesLike::AffectedMessages(affected));
+                }
+                return;
+            }
             (Ok(u), _) => {
                 // In the future, we might want to flag "updates produced by the client" somehow.
                 // This would be the starting place to do it.
-                updates.push(UpdatesLike::Updates(u));
+                updates.push(u);
                 return;
             }
-            (Err(e), _) => warn!("telegram sent updates that failed to be deserialized: {e}"),
-        }
-
-        match tl::enums::messages::AffectedMessages::from_bytes(&update) {
-            Ok(tl::enums::messages::AffectedMessages::Messages(u)) => {
-                updates.push(UpdatesLike::AffectedMessages(u));
-                return;
+            (Err(e), _) => {
+                // This shouldn't happen. We just made the request, so they shouldn't be stale.
+                // If the request failed with a failed-to-deserialize error, callers will handle it.
+                warn!("telegram responded with updates that failed to be deserialized: {e}")
             }
-            Err(_) => {}
         }
-
-        match tl::types::messages::InvitedUsers::from_bytes(&update) {
-            Ok(u) => {
-                updates.push(UpdatesLike::InvitedUsers(u));
-                return;
-            }
-            Err(_) => {}
-        }
-
-        warn!("telegram sent an unknown or invalid updates-like type for a response");
     }
 
     fn process_update(&mut self, updates: &mut Vec<UpdatesLike>, update: Vec<u8>) {
-        match tl::enums::Updates::from_bytes(&update) {
-            Ok(u) => updates.push(UpdatesLike::Updates(u)),
-            Err(e) => warn!("telegram sent updates that failed to be deserialized: {e}"),
+        match deserialize_updates_like(update) {
+            Ok(u) => updates.push(u),
+            Err(e) => {
+                // These are to be treated as a gap.
+                // > Manually obtaining updates through [get difference] is required in the following situations:
+                // > […] Incorrect update: the client cannot deserialize the received data.
+                warn!("telegram sent updates that failed to be deserialized: {e}");
+                updates.push(UpdatesLike::MalformedUpdates);
+            }
         }
     }
 

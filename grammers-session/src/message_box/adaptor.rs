@@ -62,6 +62,7 @@ fn update_short_message(short: tl::types::UpdateShortMessage) -> tl::types::Upda
                 reactions: None,
                 id: short.id,
                 from_id: None,
+                from_rank: None,
                 from_boosts_applied: None,
                 peer_id: tl::types::PeerUser {
                     user_id: short.user_id,
@@ -87,6 +88,7 @@ fn update_short_message(short: tl::types::UpdateShortMessage) -> tl::types::Upda
                 quick_reply_shortcut_id: None,
                 offline: false,
                 via_business_bot_id: None,
+                guestchat_via_from: None,
                 effect: None,
                 factcheck: None,
                 report_delivery_until_date: None,
@@ -133,6 +135,7 @@ fn update_short_chat_message(
                     .into(),
                 ),
                 from_boosts_applied: None,
+                from_rank: None,
                 peer_id: tl::types::PeerChat {
                     chat_id: short.chat_id,
                 }
@@ -157,6 +160,7 @@ fn update_short_chat_message(
                 quick_reply_shortcut_id: None,
                 offline: false,
                 via_business_bot_id: None,
+                guestchat_via_from: None,
                 effect: None,
                 factcheck: None,
                 report_delivery_until_date: None,
@@ -265,11 +269,13 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                         id: update.id,
                         from_id: request.send_as.as_ref().map(peer_from_input_peer),
                         from_boosts_applied: None,
+                        from_rank: None,
                         peer_id: peer_from_input_peer(&request.peer),
                         saved_peer_id: None,
                         fwd_from: None,
                         via_bot_id: None,
                         via_business_bot_id: None,
+                        guestchat_via_from: None,
                         reply_to: request
                             .reply_to
                             .map(|r| match r {
@@ -291,6 +297,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                                             quote_entities: i.quote_entities,
                                             quote_offset: i.quote_offset,
                                             todo_item_id: None,
+                                            poll_option: None,
                                         },
                                     ))
                                 }
@@ -341,7 +348,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                 date: update.date,
             }))
         }
-        // For simplicity, instead of introducing an extra enum, reuse a closely-related update type.
+        // Reuse a closely-related update type to keep pts consistent.
         UpdatesLike::AffectedMessages(affected) => Ok(update_short(tl::types::UpdateShort {
             update: tl::types::UpdateDeleteMessages {
                 messages: Vec::new(),
@@ -351,8 +358,23 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
             .into(),
             date: 0,
         })),
+        // Channel-specific variant: use UpdateDeleteChannelMessages so the pts is applied
+        // to Key::Channel(channel_id) instead of Key::Common.
+        UpdatesLike::AffectedChannelMessages {
+            affected,
+            channel_id,
+        } => Ok(update_short(tl::types::UpdateShort {
+            update: tl::types::UpdateDeleteChannelMessages {
+                channel_id,
+                messages: Vec::new(),
+                pts: affected.pts,
+                pts_count: affected.pts_count,
+            }
+            .into(),
+            date: 0,
+        })),
         UpdatesLike::InvitedUsers(invited) => adapt_updates(invited.updates),
-        UpdatesLike::ConnectionClosed => return Err(Gap),
+        UpdatesLike::ConnectionClosed | UpdatesLike::MalformedUpdates => return Err(Gap),
     }
 }
 
