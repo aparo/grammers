@@ -12,13 +12,13 @@
 //! your needs, you can also implement [`crate::Session`] yourself.
 
 mod memory;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "postgres-storage")]
 mod postgres;
 #[cfg(feature = "sqlite-storage")]
 mod sqlite;
 
 pub use memory::MemorySession;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "postgres-storage")]
 pub use postgres::PostgresSession;
 #[cfg(feature = "sqlite-storage")]
 pub use sqlite::SqliteSession;

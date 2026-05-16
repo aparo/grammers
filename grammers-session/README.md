@@ -10,11 +10,11 @@ an expensive process).
 
 The crate ships with three built-in storages, gated by Cargo features:
 
-| Storage           | Type            | Feature flag      | Default |
-| ----------------- | --------------- | ----------------- | ------- |
-| `MemorySession`   | In-memory       | (always on)       | yes     |
-| `SqliteSession`   | SQLite file/DB  | `sqlite-storage`  | yes     |
-| `PostgresSession` | PostgreSQL pool | `postgres`        | no      |
+| Storage           | Type            | Feature flag     | Default |
+| ----------------- | --------------- | ---------------- | ------- |
+| `MemorySession`   | In-memory       | (always on)      | yes     |
+| `SqliteSession`   | SQLite file/DB  | `sqlite-storage` | yes     |
+| `PostgresSession` | PostgreSQL pool | `postgres`       | no      |
 
 You can also implement the `Session` trait yourself to use a different backend.
 
@@ -24,7 +24,7 @@ Enable the `postgres` feature to pull in the `sqlx`-based PostgreSQL backend:
 
 ```toml
 [dependencies]
-grammers-session = { version = "0.9", features = ["postgres"] }
+grammers-session = { version = "0.9", features = ["postgres-storage"] }
 ```
 
 A single PostgreSQL database can host many independent sessions: every row is
