@@ -144,23 +144,12 @@ impl InputMedia {
     /// The text will be the caption of the document, which may be empty for no caption.
     pub fn document(mut self, file: Uploaded) -> Self {
         let mime_type = self.get_file_mime(&file);
-        let file_name = file.name().to_string();
-        self.media = Some(
-            (tl::types::InputMediaUploadedDocument {
-                nosound_video: false,
-                force_file: false,
-                spoiler: false,
-                file: file.raw,
-                thumb: None,
-                mime_type,
-                attributes: vec![(tl::types::DocumentAttributeFilename { file_name }).into()],
-                stickers: None,
-                ttl_seconds: self.media_ttl,
-                video_cover: None,
-                video_timestamp: None,
-            })
-            .into(),
-        );
+        self.media = Some(super::uploaded_document(
+            file,
+            mime_type,
+            false,
+            self.media_ttl,
+        ));
         self
     }
 
@@ -267,23 +256,12 @@ impl InputMedia {
     /// The text will be the caption of the file, which may be empty for no caption.
     pub fn file(mut self, file: Uploaded) -> Self {
         let mime_type = self.get_file_mime(&file);
-        let file_name = file.name().to_string();
-        self.media = Some(
-            (tl::types::InputMediaUploadedDocument {
-                nosound_video: false,
-                force_file: true,
-                spoiler: false,
-                file: file.raw,
-                thumb: None,
-                mime_type,
-                attributes: vec![(tl::types::DocumentAttributeFilename { file_name }).into()],
-                stickers: None,
-                ttl_seconds: self.media_ttl,
-                video_cover: None,
-                video_timestamp: None,
-            })
-            .into(),
-        );
+        self.media = Some(super::uploaded_document(
+            file,
+            mime_type,
+            true,
+            self.media_ttl,
+        ));
         self
     }
 

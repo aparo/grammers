@@ -749,15 +749,20 @@ impl MessageBoxes {
 
 /// Getting and applying channel difference.
 impl MessageBoxes {
+    /// The first channel currently getting its difference, as `(key, channel_id)`, if any.
+    fn channel_in_diff(&self) -> Option<(Key, i64)> {
+        self.getting_diff_for.iter().find_map(|&key| match key {
+            Key::Channel(id) => Some((key, id)),
+            _ => None,
+        })
+    }
+
     /// Return the request that needs to be made to get a channel's difference, if any.
     ///
     /// Note that this only returns the skeleton of a request.
     /// Both the channel hash and limit will be their default value.
     pub fn get_channel_difference(&self) -> Option<tl::functions::updates::GetChannelDifference> {
-        let (key, channel_id) = self.getting_diff_for.iter().find_map(|&key| match key {
-            Key::Channel(id) => Some((key, id)),
-            _ => None,
-        })?;
+        let (key, channel_id) = self.channel_in_diff()?;
 
         if let Some(pts) = self.entry(key).map(|entry| entry.pts) {
             let gd = tl::functions::updates::GetChannelDifference {
@@ -784,12 +789,7 @@ impl MessageBoxes {
         difference: tl::enums::updates::ChannelDifference,
     ) -> defs::UpdateAndPeers {
         let (key, channel_id) = self
-            .getting_diff_for
-            .iter()
-            .find_map(|&key| match key {
-                Key::Channel(id) => Some((key, id)),
-                _ => None,
-            })
+            .channel_in_diff()
             .expect("applying channel difference to have a channel in getting_diff_for");
 
         trace!(
@@ -854,12 +854,7 @@ impl MessageBoxes {
 
     pub fn end_channel_difference(&mut self, reason: PrematureEndReason) {
         let (key, channel_id) = self
-            .getting_diff_for
-            .iter()
-            .find_map(|&key| match key {
-                Key::Channel(id) => Some((key, id)),
-                _ => None,
-            })
+            .channel_in_diff()
             .expect("ending channel difference to have a channel in getting_diff_for");
 
         trace!(

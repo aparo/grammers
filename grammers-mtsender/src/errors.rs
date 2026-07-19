@@ -194,6 +194,14 @@ impl RpcError {
 /// This error occurs when a Remote Procedure call was unsuccessful.
 #[derive(Debug)]
 pub enum InvocationError {
+    /// Error propagated from the session.
+    ///
+    /// Most commonly, the session is accessed on each request to query the current
+    /// datacenter, and whenever peers are encountered as those need to be persisted.
+    ///
+    /// The concrete error type is erased as that depends on the session storage used.
+    Session(Box<dyn std::error::Error + Send + Sync>),
+
     /// The request invocation failed because it was invalid or the server
     /// could not process it successfully. If the server is suffering from
     /// temporary issues, the request may be retried after some time.
@@ -237,6 +245,7 @@ impl std::error::Error for InvocationError {}
 impl fmt::Display for InvocationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Session(_) => write!(f, "session error"),
             Self::Rpc(err) => write!(f, "request error: {err}"),
             Self::Io(err) => write!(f, "request error: {err}"),
             Self::Deserialize(err) => write!(f, "request error: {err}"),
@@ -245,6 +254,12 @@ impl fmt::Display for InvocationError {
             Self::InvalidDc => write!(f, "request error: invalid dc"),
             Self::Authentication(err) => write!(f, "request error: {err}"),
         }
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for InvocationError {
+    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Session(error)
     }
 }
 

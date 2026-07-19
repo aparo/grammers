@@ -53,7 +53,9 @@ impl CallbackQuery {
     }
 
     /// Cached reference to the [`Self::peer`], if it is in cache.
-    pub async fn peer_ref(&self) -> Option<PeerRef> {
+    pub async fn peer_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
         self.peers.get_ref(self.peer_id()).await
     }
 
@@ -72,7 +74,9 @@ impl CallbackQuery {
     }
 
     /// Cached reference to the [`Self::sender`], if it is in cache.
-    pub async fn sender_ref(&self) -> Option<PeerRef> {
+    pub async fn sender_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
         self.peers.get_ref(self.sender_id()).await
     }
 
@@ -113,7 +117,7 @@ impl CallbackQuery {
         Ok(self
             .client
             .get_messages_by_id(
-                self.peer_ref().await.ok_or(InvocationError::Dropped)?,
+                self.peer_ref().await?.ok_or(InvocationError::Dropped)?,
                 &[msg_id],
             )
             .await?
@@ -184,7 +188,7 @@ impl<'a> Answer<'a> {
         let peer = self
             .query
             .peer_ref()
-            .await
+            .await?
             .ok_or(InvocationError::Dropped)?;
         match &self.query.raw {
             tl::enums::Update::BotCallbackQuery(update) => {
@@ -212,7 +216,7 @@ impl<'a> Answer<'a> {
         let peer = self
             .query
             .peer_ref()
-            .await
+            .await?
             .ok_or(InvocationError::Dropped)?;
         self.query.client.send_message(peer, message).await
     }
@@ -230,7 +234,7 @@ impl<'a> Answer<'a> {
         let peer = self
             .query
             .peer_ref()
-            .await
+            .await?
             .ok_or(InvocationError::Dropped)?;
         let message = message.into();
         self.query

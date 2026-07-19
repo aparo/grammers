@@ -14,8 +14,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use grammers_mtsender::InvocationError;
-use grammers_mtsender::RpcError;
+use grammers_mtsender::{InvocationError, RpcError};
 use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
 
@@ -118,6 +117,9 @@ impl ParticipantIter {
                     tl::enums::ChatFull::Full(chat) => chat,
                     tl::enums::ChatFull::ChannelFull(_) => panic!(
                         "API returned ChannelFull even though messages::GetFullChat was used"
+                    ),
+                    tl::enums::ChatFull::CommunityFull(_) => panic!(
+                        "API returned CommunityFull even though messages::GetFullChat was used"
                     ),
                 };
 
@@ -293,7 +295,7 @@ impl ProfilePhotoIter {
                 };
 
                 // Don't bother updating offsets if this is the last time stuff has to be fetched.
-                if !iter.last_chunk && !iter.buffer.is_empty() {
+                if !iter.last_chunk && !photos.is_empty() {
                     iter.request.offset += photos.len() as i32;
                 }
 
@@ -796,12 +798,16 @@ impl Client {
         invite_link: &str,
     ) -> Result<Option<Peer>, InvocationError> {
         match Self::parse_invite_link(invite_link) {
-            Some(hash) => Ok(updates_to_chat(
-                self,
-                None,
-                self.invoke(&tl::functions::messages::ImportChatInvite { hash })
-                    .await?,
-            )),
+            Some(hash) => Ok(
+                if let tl::enums::messages::ChatInviteJoinResult::Ok(ok) = self
+                    .invoke(&tl::functions::messages::ImportChatInvite { hash })
+                    .await?
+                {
+                    updates_to_chat(self, None, ok.updates)
+                } else {
+                    None
+                },
+            ),
             None => Err(InvocationError::Rpc(RpcError {
                 code: 400,
                 name: "INVITE_HASH_INVALID".to_string(),
@@ -825,12 +831,16 @@ impl Client {
     ) -> Result<Option<Peer>, InvocationError> {
         let chat: PeerRef = chat.into();
         let channel = chat.into();
-        Ok(updates_to_chat(
-            self,
-            chat.id.bare_id(),
-            self.invoke(&tl::functions::channels::JoinChannel { channel })
-                .await?,
-        ))
+        Ok(
+            if let tl::enums::messages::ChatInviteJoinResult::Ok(ok) = self
+                .invoke(&tl::functions::channels::JoinChannel { channel })
+                .await?
+            {
+                updates_to_chat(self, chat.id.bare_id(), ok.updates)
+            } else {
+                None
+            },
+        )
     }
 
     /// Send a message action (such as typing, uploading photo, or viewing an emoji interaction)
@@ -907,7 +917,9 @@ impl Client {
         if self.0.configuration.auto_cache_peers {
             for peer in map.values() {
                 if peer.auth().is_some() {
-                    self.0.session.cache_peer(&peer.into()).await;
+                    if let Err(e) = self.0.session.cache_peer(&peer.into()).await {
+                        log::warn!("cache_peer fail: {:?}", e)
+                    }
                 }
             }
         }

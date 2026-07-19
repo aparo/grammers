@@ -30,7 +30,7 @@ const NUM_FUTURE_SALTS: i32 = 64;
 /// Used to prevent small fluctuations in the system clock.
 const SALT_USE_DELAY: i32 = 60;
 
-static UPDATE_IDS: [u32; 8] = [
+static UPDATE_IDS: [u32; 9] = [
     tl::types::UpdateShortMessage::CONSTRUCTOR_ID,
     tl::types::UpdateShortChatMessage::CONSTRUCTOR_ID,
     tl::types::UpdateShort::CONSTRUCTOR_ID,
@@ -39,6 +39,7 @@ static UPDATE_IDS: [u32; 8] = [
     tl::types::UpdateShortSentMessage::CONSTRUCTOR_ID,
     tl::types::messages::AffectedMessages::CONSTRUCTOR_ID,
     tl::types::messages::InvitedUsers::CONSTRUCTOR_ID,
+    tl::types::messages::ChatInviteJoinResultOk::CONSTRUCTOR_ID,
 ];
 
 /// A builder to configure [`Mtp`] instances.

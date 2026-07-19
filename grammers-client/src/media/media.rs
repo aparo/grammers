@@ -240,6 +240,18 @@ impl Downloadable for Photo {
             ),
         })
     }
+
+    fn size(&self) -> Option<usize> {
+        self.size()
+    }
+
+    fn dc_id(&self) -> Option<i32> {
+        use tl::enums::Photo as P;
+        match self.raw.photo.as_ref()? {
+            P::Empty(_) => None,
+            P::Photo(photo) => Some(photo.dc_id),
+        }
+    }
 }
 
 impl Document {
@@ -459,6 +471,14 @@ impl Downloadable for Document {
 
     fn size(&self) -> Option<usize> {
         self.size()
+    }
+
+    fn dc_id(&self) -> Option<i32> {
+        use tl::enums::Document as D;
+        match self.raw.document.as_ref()? {
+            D::Empty(_) => None,
+            D::Document(document) => Some(document.dc_id),
+        }
     }
 }
 
@@ -818,6 +838,21 @@ impl Media {
         }
     }
 
+    pub fn size(&self) -> Option<usize> {
+        match self {
+            Media::Photo(photo) => photo.size(),
+            Media::Document(document) => document.size(),
+            Media::Sticker(sticker) => sticker.document.size(),
+            Media::Contact(_) => None,
+            Media::Poll(_) => None,
+            Media::Geo(_) => None,
+            Media::Dice(_) => None,
+            Media::Venue(_) => None,
+            Media::GeoLive(_) => None,
+            Media::WebPage(_) => None,
+        }
+    }
+
     pub fn to_raw_input_media(&self) -> Option<tl::enums::InputMedia> {
         match self {
             Media::Photo(photo) => Some(photo.to_raw_input_media().into()),
@@ -840,6 +875,25 @@ impl Downloadable for Media {
             Media::Photo(photo) => photo.to_raw_input_location(),
             Media::Document(document) => document.to_raw_input_location(),
             Media::Sticker(sticker) => sticker.document.to_raw_input_location(),
+            Media::Contact(_) => None,
+            Media::Poll(_) => None,
+            Media::Geo(_) => None,
+            Media::Dice(_) => None,
+            Media::Venue(_) => None,
+            Media::GeoLive(_) => None,
+            Media::WebPage(_) => None,
+        }
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.size()
+    }
+
+    fn dc_id(&self) -> Option<i32> {
+        match self {
+            Media::Photo(photo) => photo.dc_id(),
+            Media::Document(document) => document.dc_id(),
+            Media::Sticker(sticker) => sticker.document.dc_id(),
             Media::Contact(_) => None,
             Media::Poll(_) => None,
             Media::Geo(_) => None,

@@ -26,7 +26,7 @@ async fn map_random_ids_to_messages(
     fetched_in: PeerRef,
     random_ids: &[i64],
     updates: tl::enums::Updates,
-) -> Vec<Option<Message>> {
+) -> Result<Vec<Option<Message>>, Box<dyn std::error::Error + Send + Sync>> {
     match updates {
         tl::enums::Updates::Updates(tl::types::Updates {
             updates,
@@ -68,7 +68,7 @@ async fn map_random_ids_to_messages(
                 .map(|message| (message.id(), message))
                 .collect::<HashMap<_, _>>();
 
-            random_ids
+            Ok(random_ids
                 .iter()
                 .map(|rnd| {
                     rnd_to_id
@@ -84,7 +84,7 @@ async fn map_random_ids_to_messages(
                             }
                         })
                 })
-                .collect()
+                .collect())
         }
         _ => panic!("API returned something other than Updates so messages can't be mapped"),
     }
@@ -114,6 +114,7 @@ pub(crate) async fn parse_mention_entities(
                             .session
                             .peer(PeerId::user_unchecked(mention_name.user_id))
                             .await
+                            .unwrap_or_default()
                             .and_then(|peer| peer.auth())
                             .unwrap_or_default()
                             .hash(),
@@ -128,6 +129,44 @@ pub(crate) async fn parse_mention_entities(
 }
 
 const MAX_LIMIT: usize = 100;
+
+/// Build a reply-to a plain message by its ID, leaving all other fields unset.
+fn input_reply_to(reply_to_msg_id: i32) -> tl::enums::InputReplyTo {
+    tl::types::InputReplyToMessage {
+        reply_to_msg_id,
+        top_msg_id: None,
+        reply_to_peer_id: None,
+        quote_text: None,
+        quote_entities: None,
+        quote_offset: None,
+        monoforum_peer_id: None,
+        todo_item_id: None,
+        poll_option: None,
+    }
+    .into()
+}
+
+/// Flatten a `messages.Messages` response into its messages, users and chats.
+///
+/// Panics on `NotModified`, which is only returned when a non-zero `hash` was sent.
+fn unpack_messages(
+    res: tl::enums::messages::Messages,
+) -> (
+    Vec<tl::enums::Message>,
+    Vec<tl::enums::User>,
+    Vec<tl::enums::Chat>,
+) {
+    use tl::enums::messages::Messages;
+
+    match res {
+        Messages::Messages(m) => (m.messages, m.users, m.chats),
+        Messages::Slice(m) => (m.messages, m.users, m.chats),
+        Messages::ChannelMessages(m) => (m.messages, m.users, m.chats),
+        Messages::NotModified(_) => {
+            panic!("API returned Messages::NotModified even though GetMessages was used")
+        }
+    }
+}
 
 impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Message> {
     /// Fetches the total unless cached.
@@ -156,11 +195,12 @@ impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Me
     async fn fill_buffer(
         &mut self,
         limit: i32,
+        reverse: bool,
         peer: Option<PeerRef>,
     ) -> Result<Option<i32>, InvocationError> {
         use tl::enums::messages::Messages;
 
-        let (messages, users, chats, rate) = match self.client.invoke(&self.request).await? {
+        let (mut messages, users, chats, rate) = match self.client.invoke(&self.request).await? {
             Messages::Messages(m) => {
                 self.last_chunk = true;
                 self.total = Some(m.messages.len());
@@ -174,15 +214,19 @@ impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Me
                 // offset_id 132002, limit 2 => we get msg 132000
                 // offset_id 132002, limit 1 => we get msg 132001
                 //
-                // If the highest fetched message ID is lower than or equal to the limit,
-                // there can't be more messages after (highest ID - limit), because the
-                // absolute lowest message ID is 1.
-                self.last_chunk = m.messages.is_empty() || m.messages[0].id() <= limit;
+                // When iterating newest-to-oldest, the highest fetched message ID is
+                // lower than or equal to the limit, there can't be more messages after
+                // (highest ID - limit), because the absolute lowest message ID is 1.
+                self.last_chunk =
+                    m.messages.is_empty() || (!reverse && m.messages[0].id() <= limit);
+
                 self.total = Some(m.count as usize);
+
                 (m.messages, m.users, m.chats, m.next_rate)
             }
             Messages::ChannelMessages(m) => {
-                self.last_chunk = m.messages.is_empty() || m.messages[0].id() <= limit;
+                self.last_chunk =
+                    m.messages.is_empty() || (!reverse && m.messages[0].id() <= limit);
                 self.total = Some(m.count as usize);
                 (m.messages, m.users, m.chats, None)
             }
@@ -190,6 +234,10 @@ impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Me
                 panic!("API returned Messages::NotModified even though hash = 0")
             }
         };
+
+        if reverse {
+            messages.reverse();
+        }
 
         let peers = self.client.build_peer_map(users, chats).await;
 
@@ -205,11 +253,14 @@ impl<R: tl::RemoteCall<Return = tl::enums::messages::Messages>> IterBuffer<R, Me
 }
 
 /// Iterator returned by [`Client::iter_messages`].
-pub type MessageIter = IterBuffer<tl::functions::messages::GetHistory, Message>;
+pub struct MessageIter {
+    inner: IterBuffer<tl::functions::messages::GetHistory, Message>,
+    reverse: bool,
+}
 
 impl MessageIter {
     fn new(client: &Client, peer: PeerRef) -> Self {
-        Self::from_request(
+        let inner = IterBuffer::from_request(
             client,
             MAX_LIMIT,
             tl::functions::messages::GetHistory {
@@ -222,36 +273,42 @@ impl MessageIter {
                 min_id: 0,
                 hash: 0,
             },
-        )
+        );
+
+        Self {
+            inner,
+            reverse: false,
+        }
     }
 
     /// set the limit of messages to fetch per request
     pub fn set_limit(mut self, records: i32) -> Self {
         if records <= 0 {
-            self.request.limit = 0;
+            self.inner.request.limit = 0;
         } else if records >= MAX_LIMIT as i32 {
-            self.request.limit = MAX_LIMIT as i32;
+            self.inner.request.limit = MAX_LIMIT as i32;
         } else {
-            self.request.limit = records;
+            self.inner.request.limit = records;
         }
         self
     }
 
     /// Changes the message offset.
     pub fn add_offset(mut self, offset: i32) -> Self {
-        self.request.add_offset = offset;
+        self.inner.request.add_offset = offset;
         self
     }
 
     /// Changes the message identifier upper bound.
+    /// Changes the starting message ID (exclusive).
     pub fn offset_id(mut self, offset: i32) -> Self {
-        self.request.offset_id = offset;
+        self.inner.request.offset_id = offset;
         self
     }
 
-    /// Changes the message send date upper bound.
-    pub fn max_date(mut self, offset: i32) -> Self {
-        self.request.offset_date = offset;
+    /// Changes the starting message date.
+    pub fn offset_date(mut self, offset: i32) -> Self {
+        self.inner.request.offset_date = offset;
         self
     }
 
@@ -259,7 +316,7 @@ impl MessageIter {
     /// This is useful for fetching messages in a specific range.
     /// For example, fetching messages from a specific message id to the latest message.
     pub fn max_id(mut self, max_id: i32) -> Self {
-        self.request.max_id = max_id;
+        self.inner.request.max_id = max_id;
         self
     }
 
@@ -267,16 +324,28 @@ impl MessageIter {
     /// This is useful for fetching messages in a specific range.
     /// For example, fetching messages from the oldest message to a specific message id.
     pub fn min_id(mut self, min_id: i32) -> Self {
-        self.request.min_id = min_id;
+        self.inner.request.min_id = min_id;
         self
     }
 
     /// Determines how many messages there are in total.
+    /// Changes the order to oldest-to-newest. (default is newest-to-oldest)
+    pub fn reverse(mut self, reverse: bool) -> Self {
+        self.reverse = reverse;
+        self
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.inner = self.inner.limit(limit);
+        self
+    }
+
+    /// Determines the total number of messages in the chat.
     ///
     /// This only performs a network call if `next` has not been called before.
     pub async fn total(&mut self) -> Result<usize, InvocationError> {
-        self.request.limit = 1;
-        self.get_total().await
+        self.inner.request.limit = 1;
+        self.inner.get_total().await
     }
 
     /// Returns the next `Message` from the internal buffer, filling the buffer previously if it's
@@ -284,22 +353,37 @@ impl MessageIter {
     ///
     /// Returns `None` if the `limit` is reached or there are no messages left.
     pub async fn next(&mut self) -> Result<Option<Message>, InvocationError> {
-        if let Some(result) = self.next_raw() {
+        if let Some(result) = self.inner.next_raw() {
             return result;
         }
 
-        self.request.limit = self.determine_limit(MAX_LIMIT);
-        self.fill_buffer(self.request.limit, Some(self.request.peer.clone().into()))
+        self.inner.request.limit = self.inner.determine_limit(MAX_LIMIT);
+        let request = &mut self.inner.request;
+        if self.reverse {
+            request.add_offset = -request.limit;
+            request.min_id = request.offset_id;
+            if request.offset_id == 0 && request.offset_date == 0 {
+                // With no explicit offset, start from the oldest available page.
+                request.offset_id = 1;
+                request.add_offset = -request.limit + 1; // +1 to include the first message (ID=1)
+            }
+        }
+        self.inner
+            .fill_buffer(
+                self.inner.request.limit,
+                self.reverse,
+                Some(self.inner.request.peer.clone().into()),
+            )
             .await?;
 
         // Don't bother updating offsets if this is the last time stuff has to be fetched.
-        if !self.last_chunk && !self.buffer.is_empty() {
-            let last = &self.buffer[self.buffer.len() - 1];
-            self.request.offset_id = last.id();
-            self.request.offset_date = last.date_timestamp();
+        if !self.inner.last_chunk && !self.inner.buffer.is_empty() {
+            let last = &self.inner.buffer[self.inner.buffer.len() - 1];
+            self.inner.request.offset_id = last.id();
+            self.inner.request.offset_date = last.date_timestamp();
         }
 
-        Ok(self.pop_item())
+        Ok(self.inner.pop_item())
     }
 }
 
@@ -462,8 +546,12 @@ impl SearchIter {
         }
 
         self.request.limit = self.determine_limit(MAX_LIMIT);
-        self.fill_buffer(self.request.limit, Some(self.request.peer.clone().into()))
-            .await?;
+        self.fill_buffer(
+            self.request.limit,
+            false,
+            Some(self.request.peer.clone().into()),
+        )
+        .await?;
 
         // Don't bother updating offsets if this is the last time stuff has to be fetched.
         if !self.last_chunk && !self.buffer.is_empty() {
@@ -498,6 +586,7 @@ impl GlobalSearchIter {
                 broadcasts_only: false,
                 groups_only: false,
                 users_only: false,
+                community: None,
             },
         )
     }
@@ -540,7 +629,7 @@ impl GlobalSearchIter {
         }
 
         self.request.limit = self.determine_limit(MAX_LIMIT);
-        let offset_rate = self.fill_buffer(self.request.limit, None).await?;
+        let offset_rate = self.fill_buffer(self.request.limit, false, None).await?;
 
         // Don't bother updating offsets if this is the last time stuff has to be fetched.
         if !self.last_chunk && !self.buffer.is_empty() {
@@ -548,7 +637,7 @@ impl GlobalSearchIter {
             self.request.offset_rate = offset_rate.unwrap_or(0);
             self.request.offset_peer = last
                 .peer_ref()
-                .await
+                .await?
                 .map(|peer| peer.into())
                 .unwrap_or(tl::enums::InputPeer::Empty);
             self.request.offset_id = last.id();
@@ -599,20 +688,7 @@ impl Client {
                 background: message.background,
                 clear_draft: message.clear_draft,
                 peer: peer.into(),
-                reply_to: message.reply_to.map(|reply_to_msg_id| {
-                    tl::types::InputReplyToMessage {
-                        reply_to_msg_id,
-                        top_msg_id: None,
-                        reply_to_peer_id: None,
-                        quote_text: None,
-                        quote_entities: None,
-                        quote_offset: None,
-                        monoforum_peer_id: None,
-                        todo_item_id: None,
-                        poll_option: None,
-                    }
-                    .into()
-                }),
+                reply_to: message.reply_to.map(input_reply_to),
                 media,
                 message: message.text.clone(),
                 random_id,
@@ -638,20 +714,7 @@ impl Client {
                 background: message.background,
                 clear_draft: message.clear_draft,
                 peer: peer.into(),
-                reply_to: message.reply_to.map(|reply_to_msg_id| {
-                    tl::types::InputReplyToMessage {
-                        reply_to_msg_id,
-                        top_msg_id: None,
-                        reply_to_peer_id: None,
-                        quote_text: None,
-                        quote_entities: None,
-                        quote_offset: None,
-                        monoforum_peer_id: None,
-                        todo_item_id: None,
-                        poll_option: None,
-                    }
-                    .into()
-                }),
+                reply_to: message.reply_to.map(input_reply_to),
                 message: message.text.clone(),
                 random_id,
                 reply_markup: message.reply_markup.clone(),
@@ -667,6 +730,7 @@ impl Client {
                 allow_paid_floodskip: false,
                 allow_paid_stars: None,
                 suggested_post: None,
+                rich_message: None,
             })
             .await
         }?;
@@ -675,7 +739,7 @@ impl Client {
             tl::enums::Updates::UpdateShortSentMessage(updates) => {
                 let peer = if peer.id.bare_id().is_none() {
                     // from_raw_short_updates needs the peer ID
-                    self.0.session.peer_ref(peer.id).await.unwrap()
+                    self.0.session.peer_ref(peer.id).await?.unwrap()
                 } else {
                     peer
                 };
@@ -690,7 +754,7 @@ impl Client {
                 };
 
                 match map_random_ids_to_messages(self, peer, &[random_id], updates)
-                    .await
+                    .await?
                     .pop()
                     .flatten()
                 {
@@ -795,20 +859,7 @@ impl Client {
                 background: false,
                 clear_draft: false,
                 peer: peer.into(),
-                reply_to: first_media_reply.map(|reply_to_msg_id| {
-                    tl::types::InputReplyToMessage {
-                        reply_to_msg_id,
-                        top_msg_id: None,
-                        reply_to_peer_id: None,
-                        quote_text: None,
-                        quote_entities: None,
-                        quote_offset: None,
-                        monoforum_peer_id: None,
-                        todo_item_id: None,
-                        poll_option: None,
-                    }
-                    .into()
-                }),
+                reply_to: first_media_reply.map(input_reply_to),
                 schedule_date: None,
                 multi_media,
                 send_as: None,
@@ -822,7 +873,7 @@ impl Client {
             })
             .await?;
 
-        Ok(map_random_ids_to_messages(self, peer, &random_ids, updates).await)
+        Ok(map_random_ids_to_messages(self, peer, &random_ids, updates).await?)
     }
 
     /// Edits an existing message.
@@ -861,6 +912,7 @@ impl Client {
             schedule_date: new_message.schedule_date,
             schedule_repeat_period: None,
             quick_reply_shortcut_id: None,
+            rich_message: None,
         })
         .await?;
 
@@ -977,7 +1029,7 @@ impl Client {
             suggested_post: None,
         };
         let result = self.invoke(&request).await?;
-        Ok(map_random_ids_to_messages(self, peer.into(), &request.random_id, result).await)
+        Ok(map_random_ids_to_messages(self, peer.into(), &request.random_id, result).await?)
     }
 
     /// Gets the [`Message`] to which the input message is replying to.
@@ -1027,7 +1079,7 @@ impl Client {
                 id: peer_id,
                 auth: PeerAuth::default(), // unused, so no need to bother fetching it
             },
-            PeerKind::Channel => message.peer_ref().await.ok_or(InvocationError::Dropped)?,
+            PeerKind::Channel => message.peer_ref().await?.ok_or(InvocationError::Dropped)?,
         };
         let reply_to_message_id = match message.reply_to_message_id() {
             Some(id) => id,
@@ -1047,16 +1099,7 @@ impl Client {
             }
         };
 
-        use tl::enums::messages::Messages;
-
-        let (messages, users, chats) = match res {
-            Messages::Messages(m) => (m.messages, m.users, m.chats),
-            Messages::Slice(m) => (m.messages, m.users, m.chats),
-            Messages::ChannelMessages(m) => (m.messages, m.users, m.chats),
-            Messages::NotModified(_) => {
-                panic!("API returned Messages::NotModified even though GetMessages was used")
-            }
-        };
+        let (messages, users, chats) = unpack_messages(res);
 
         let peers = self.build_peer_map(users, chats).await;
         Ok(messages
@@ -1170,14 +1213,7 @@ impl Client {
                 .await
         }?;
 
-        let (messages, users, chats) = match result {
-            tl::enums::messages::Messages::Messages(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::Slice(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::NotModified(_) => {
-                panic!("API returned Messages::NotModified even though GetMessages was used")
-            }
-        };
+        let (messages, users, chats) = unpack_messages(result);
 
         let peers = self.build_peer_map(users, chats).await;
         let mut map = messages
@@ -1223,14 +1259,7 @@ impl Client {
                 .await
         }?;
 
-        let (messages, users, chats) = match result {
-            tl::enums::messages::Messages::Messages(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::Slice(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users, m.chats),
-            tl::enums::messages::Messages::NotModified(_) => {
-                panic!("API returned Messages::NotModified even though GetMessages was used")
-            }
-        };
+        let (messages, users, chats) = unpack_messages(result);
 
         let peers = self.build_peer_map(users, chats).await;
         Ok(messages

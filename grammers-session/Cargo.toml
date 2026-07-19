@@ -1,6 +1,6 @@
 [package]
 name = "grammers-session"
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Lonami Exo <totufals@hotmail.com>"]
 license = "MIT OR Apache-2.0"
 description = """
@@ -14,27 +14,25 @@ categories = []
 edition = "2024"
 
 [dependencies]
-futures-core = "0.3.32"
-grammers-tl-types = { path = "../grammers-tl-types", version = "0.9.0" }
-log = "0.4.29"
+grammers-tl-types = { path = "../grammers-tl-types", version = "0.10.0" }
+log = "0.4.33"
 
 libsql = { version = "0.9.30", default-features = false, features = [
   "core",
 ], optional = true }
-tokio = { version = "1.49.0", default-features = false, features = ["sync"] }
+tokio = { version = "1.52.3", default-features = false, features = ["sync"] }
 
-sqlx = { version = "0.8.6", default-features = false, features = [
-  "runtime-tokio-rustls",
+sqlx = { version = "0.9.0", default-features = false, features = [
+  # "runtime-tokio-rustls",
   "postgres",
   "macros",
 ], optional = true }
-
 serde = { version = "1", features = ["derive"], optional = true }
 serde_with = { version = "3", features = ["hex"], optional = true }
 
 [dev-dependencies]
-toml = "1.0.3"
-tokio = { version = "1.49.0", default-features = false, features = [
+toml = "1.1.2"
+tokio = { version = "1.52.3", default-features = false, features = [
   "sync",
   "rt",
 ] }

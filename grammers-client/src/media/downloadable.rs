@@ -24,4 +24,9 @@ pub trait Downloadable {
     fn size(&self) -> Option<usize> {
         None
     }
+
+    /// Datacenter that hosts this file.
+    fn dc_id(&self) -> Option<i32> {
+        None
+    }
 }

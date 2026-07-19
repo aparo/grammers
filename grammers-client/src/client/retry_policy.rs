@@ -47,15 +47,18 @@ impl RetryPolicy for NoRetries {
     }
 }
 
-/// Retry policy that will retry *once* on flood-wait and slow mode wait errors.
+/// Retry policy that will retry up to `tries` times on flood-wait and slow mode wait errors.
 ///
 /// The library will sleep only if the duration to sleep for is below or equal to the threshold.
 pub struct AutoSleep {
+    /// The (inclusive) number of tries below which the request should be retried.
+    pub tries: NonZeroU32,
+
     /// The (inclusive) threshold below which the library should automatically sleep.
     pub threshold: Duration,
 
     /// `Some` if I/O errors should be treated as a flood error that would last the specified duration.
-    /// This duration will ignore the `threshold` and always be slept on on the first I/O error.
+    /// This duration will ignore the `threshold` and always be slept on I/O errors while `tries` is not exceeded.
     pub io_errors_as_flood_of: Option<Duration>,
 }
 
@@ -66,10 +69,10 @@ impl RetryPolicy for AutoSleep {
                 code: 420,
                 value: Some(seconds),
                 ..
-            }) if ctx.fail_count.get() == 1 && seconds as u64 <= self.threshold.as_secs() => {
+            }) if ctx.fail_count <= self.tries && seconds as u64 <= self.threshold.as_secs() => {
                 ControlFlow::Continue(Duration::from_secs(seconds as _))
             }
-            InvocationError::Io(_) if ctx.fail_count.get() == 1 => {
+            InvocationError::Io(_) if ctx.fail_count <= self.tries => {
                 if let Some(duration) = self.io_errors_as_flood_of {
                     ControlFlow::Continue(duration)
                 } else {
@@ -87,6 +90,7 @@ impl Default for AutoSleep {
     /// I/O errors will be treated as if they were a 1-second flood.
     fn default() -> Self {
         Self {
+            tries: NonZeroU32::MIN,
             threshold: Duration::from_secs(60),
             io_errors_as_flood_of: Some(Duration::from_secs(1)),
         }

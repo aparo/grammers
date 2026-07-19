@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::{fmt, panic};
 
 use grammers_mtproto::{mtp, transport};
-use grammers_session::Session;
-use grammers_session::types::DcOption;
+use grammers_session::types::{DcOption, PeerId, PeerInfo, PeerRef, UpdateState, UpdatesState};
 use grammers_session::updates::UpdatesLike;
+use grammers_session::{BoxFuture, ErasedSession, Session};
 use grammers_tl_types::{self as tl, enums};
 use tokio::task::AbortHandle;
 use tokio::{
@@ -63,7 +63,7 @@ pub struct SenderPoolFatHandle {
     /// The session in use by the attached [`SenderPoolRunner`].
     ///
     /// The runner will read and persist datacenter options in it.
-    pub session: Arc<dyn Session>,
+    pub session: Arc<ErasedSession>,
     /// Developer's [Application Identifier](https://core.telegram.org/myapp).
     ///
     /// The [`SenderPoolRunner`] will make use of this value when it needs
@@ -98,7 +98,7 @@ pub struct SenderPool {
 ///
 /// Use [`SenderPool::new`] to create an instance of this type and associated channels.
 pub struct SenderPoolRunner {
-    session: Arc<dyn Session>,
+    session: Arc<ErasedSession>,
     api_id: i32,
     connection_params: ConnectionParams,
     request_rx: mpsc::UnboundedReceiver<Request>,
@@ -157,19 +157,27 @@ impl SenderPool {
     /// Session instance **should not** be reused by multiple pools at the same time.
     /// The session instance will only be used to query datacenter options and persist
     /// any permanent Authorization Keys generated for previously-unconncected datacenters.
-    pub fn new<S: Session + 'static>(session: Arc<S>, api_id: i32) -> Self {
+    pub fn new<S>(session: Arc<S>, api_id: i32) -> Self
+    where
+        S: Session + Sized,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
         Self::with_configuration(session, api_id, Default::default())
     }
 
     /// Creates a new sender pool with non-[`ConnectionParams::default`] configuration.
-    pub fn with_configuration<S: Session + 'static>(
+    pub fn with_configuration<S>(
         session: Arc<S>,
         api_id: i32,
         connection_params: ConnectionParams,
-    ) -> Self {
+    ) -> Self
+    where
+        S: Session + Sized,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let session: Arc<ErasedSession> = Arc::new(Eraser(session));
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = mpsc::unbounded_channel();
-        let session = session as Arc<dyn Session>;
 
         Self {
             runner: SenderPoolRunner {
@@ -235,37 +243,13 @@ impl SenderPoolRunner {
                     .find(|connection| connection.dc_id == dc_id)
                 {
                     Some(connection) => connection,
-                    None => {
-                        let Some(mut dc_option) = self.session.dc_option(dc_id) else {
-                            let _ = tx.send(Err(InvocationError::InvalidDc));
+                    None => match self.create_connection(dc_id).await {
+                        Ok(x) => x,
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
                             return ControlFlow::Continue(());
-                        };
-
-                        let sender = match self.connect_sender(&dc_option).await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                                return ControlFlow::Continue(());
-                            }
-                        };
-
-                        dc_option.auth_key = Some(sender.auth_key());
-                        self.session.set_dc_option(&dc_option).await;
-
-                        let (rpc_tx, rpc_rx) = mpsc::unbounded_channel();
-                        let abort_handle = self.connection_pool.spawn(run_sender(
-                            sender,
-                            rpc_rx,
-                            self.updates_tx.clone(),
-                            dc_option.id == self.session.home_dc_id(),
-                        ));
-                        self.connections.push(ConnectionInfo {
-                            dc_id,
-                            rpc_tx,
-                            abort_handle,
-                        });
-                        self.connections.last().unwrap()
-                    }
+                        }
+                    },
                 };
                 let _ = connection.rpc_tx.send(Rpc { body, tx });
                 ControlFlow::Continue(())
@@ -283,6 +267,32 @@ impl SenderPoolRunner {
             }
             Request::Quit => ControlFlow::Break(()),
         }
+    }
+
+    async fn create_connection(&mut self, dc_id: i32) -> Result<&ConnectionInfo, InvocationError> {
+        let mut dc_option = match self.session.dc_option(dc_id)? {
+            Some(x) => x,
+            None => return Err(InvocationError::InvalidDc),
+        };
+
+        let sender = self.connect_sender(&dc_option).await?;
+
+        dc_option.auth_key = Some(sender.auth_key());
+        self.session.set_dc_option(&dc_option).await?;
+
+        let (rpc_tx, rpc_rx) = mpsc::unbounded_channel();
+        let abort_handle = self.connection_pool.spawn(run_sender(
+            sender,
+            rpc_rx,
+            self.updates_tx.clone(),
+            dc_option.id == self.session.home_dc_id()?,
+        ));
+        self.connections.push(ConnectionInfo {
+            dc_id,
+            rpc_tx,
+            abort_handle,
+        });
+        Ok(self.connections.last().unwrap())
     }
 
     async fn connect_sender(
@@ -325,7 +335,9 @@ impl SenderPoolRunner {
         };
 
         let mut sender = if let Some(auth_key) = dc_option.auth_key {
-            connect_with_auth(transport(), addr(), auth_key).await?
+            connect_with_auth(transport(), addr(), auth_key)
+                .await
+                .map_err(InvocationError::Io)?
         } else {
             connect(transport(), addr()).await?
         };
@@ -336,15 +348,15 @@ impl SenderPoolRunner {
                 sender = connect(transport(), addr()).await?;
                 sender.invoke(&init_connection).await?
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
 
-        self.update_config(remote_config).await;
+        self.update_config(remote_config).await?;
 
         Ok(sender)
     }
 
-    async fn update_config(&mut self, config: tl::types::Config) {
+    async fn update_config(&mut self, config: tl::types::Config) -> Result<(), InvocationError> {
         for option in config
             .dc_options
             .iter()
@@ -353,7 +365,7 @@ impl SenderPoolRunner {
         {
             let mut dc_option = self
                 .session
-                .dc_option(option.id)
+                .dc_option(option.id)?
                 .unwrap_or_else(|| DcOption {
                     id: option.id,
                     ipv4: SocketAddrV4::new(Ipv4Addr::from_bits(0), 0),
@@ -388,6 +400,7 @@ impl SenderPoolRunner {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -438,5 +451,83 @@ impl fmt::Debug for Request {
             }
             Self::Quit => write!(f, "Quit"),
         }
+    }
+}
+
+struct Eraser<S: Session>(Arc<S>);
+
+impl<S> Session for Eraser<S>
+where
+    S: Session,
+    S::Error: std::error::Error + Send + Sync,
+{
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn home_dc_id(&self) -> Result<i32, Self::Error> {
+        Arc::clone(&self.0).home_dc_id().map_err(|e| e.into())
+    }
+
+    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, Result<(), Self::Error>> {
+        Box::pin(async move {
+            Arc::clone(&self.0)
+                .set_home_dc_id(dc_id)
+                .await
+                .map_err(|e| e.into())
+        })
+    }
+
+    fn dc_option(&self, dc_id: i32) -> Result<Option<DcOption>, Self::Error> {
+        Arc::clone(&self.0).dc_option(dc_id).map_err(|e| e.into())
+    }
+
+    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, Result<(), Self::Error>> {
+        let dc_option = dc_option.clone();
+        Box::pin(async move {
+            Arc::clone(&self.0)
+                .set_dc_option(&dc_option)
+                .await
+                .map_err(|e| e.into())
+        })
+    }
+
+    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerInfo>, Self::Error>> {
+        Box::pin(async move { Arc::clone(&self.0).peer(peer).await.map_err(|e| e.into()) })
+    }
+
+    fn peer_ref(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerRef>, Self::Error>> {
+        Box::pin(async move {
+            Arc::clone(&self.0)
+                .peer_ref(peer)
+                .await
+                .map_err(|e| e.into())
+        })
+    }
+
+    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, Result<(), Self::Error>> {
+        let peer = peer.clone();
+        Box::pin(async move {
+            Arc::clone(&self.0)
+                .cache_peer(&peer)
+                .await
+                .map_err(|e| e.into())
+        })
+    }
+
+    fn updates_state(&self) -> BoxFuture<'_, Result<UpdatesState, Self::Error>> {
+        Box::pin(async {
+            Arc::clone(&self.0)
+                .updates_state()
+                .await
+                .map_err(|e| e.into())
+        })
+    }
+
+    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, Result<(), Self::Error>> {
+        Box::pin(async {
+            Arc::clone(&self.0)
+                .set_update_state(update)
+                .await
+                .map_err(|e| e.into())
+        })
     }
 }

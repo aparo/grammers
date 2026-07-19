@@ -47,7 +47,9 @@ impl InlineSend {
     }
 
     /// Cached reference to the [`Self::sender`], if it is in cache.
-    pub async fn sender_ref(&self) -> Option<PeerRef> {
+    pub async fn sender_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
         self.peers.get_ref(self.sender_id()).await
     }
 

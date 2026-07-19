@@ -103,6 +103,7 @@ impl Channel {
                             send_paid_messages_stars: None,
                             forum_tabs: false,
                             linked_monoforum_id: None,
+                            linked_community_id: None,
                         },
                         client: client.clone(),
                     }
@@ -110,6 +111,8 @@ impl Channel {
                     panic!("tried to create broadcast channel from megagroup");
                 }
             }
+            C::CommunityForbidden(_) => panic!("cannot create from community forbidden"),
+            C::Community(_) => panic!("cannot create from community"),
         }
     }
 
@@ -129,12 +132,10 @@ impl Channel {
     /// Convert the channel to its reference.
     ///
     /// This is only possible if the peer would be usable on all methods or if it is in the session cache.
-    pub async fn to_ref(&self) -> Option<PeerRef> {
-        let id = self.id();
-        match self.auth() {
-            Some(auth) => Some(PeerRef { id, auth }),
-            None => self.client.0.session.peer_ref(id).await,
-        }
+    pub async fn to_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
+        super::to_ref(&self.client, self.id(), self.auth()).await
     }
 
     /// Additional information about this channel.
@@ -211,6 +212,7 @@ impl Channel {
                 delete_stories: true,
                 manage_direct_messages: true,
                 manage_ranks: true,
+                manage_linked_peers: true,
             }),
             None => None,
         }

@@ -25,3 +25,32 @@ pub use media::{
     WebPage,
 };
 pub use photo_sizes::PhotoSize;
+
+use grammers_tl_types as tl;
+
+/// Build an `InputMediaUploadedDocument` from an uploaded file.
+///
+/// Shared by the `document` (`force_file = false`) and `file` (`force_file = true`)
+/// builder methods of `InputMedia` and `InputMessage`.
+pub(crate) fn uploaded_document(
+    file: Uploaded,
+    mime_type: String,
+    force_file: bool,
+    ttl_seconds: Option<i32>,
+) -> tl::enums::InputMedia {
+    let file_name = file.name().to_string();
+    tl::types::InputMediaUploadedDocument {
+        nosound_video: false,
+        force_file,
+        spoiler: false,
+        file: file.raw,
+        thumb: None,
+        mime_type,
+        attributes: vec![(tl::types::DocumentAttributeFilename { file_name }).into()],
+        stickers: None,
+        ttl_seconds,
+        video_cover: None,
+        video_timestamp: None,
+    }
+    .into()
+}

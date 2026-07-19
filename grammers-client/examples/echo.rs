@@ -22,7 +22,7 @@ use simple_logger::SimpleLogger;
 use tokio::task::JoinSet;
 use tokio::{runtime, time::sleep};
 
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 const SESSION_FILE: &str = "echo.session";
 
@@ -38,7 +38,7 @@ async fn handle_update(client: Client, update: Update) {
                 sleep(Duration::from_secs(5)).await;
             }
             if let Err(e) = client
-                .send_message(peer.to_ref().await.unwrap(), message.text())
+                .send_message(peer.to_ref().await.unwrap().unwrap(), message.text())
                 .await
             {
                 println!("Failed to respond! {e}");
@@ -87,7 +87,7 @@ async fn async_main() -> Result {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
     loop {
         // Empty finished handlers (you could look at their return value here too.)
         while let Some(_) = handler_tasks.try_join_next() {}
@@ -107,7 +107,7 @@ async fn async_main() -> Result {
     }
 
     println!("Saving session file...");
-    updates.sync_update_state().await; // you usually want this before closing the session
+    updates.sync_update_state().await?; // you usually want this before closing the session
 
     // Pool's `run()` won't finish until all handles are dropped or quit is called.
     // Here there are at least three handles alive: `handle`, `client` and `updates`

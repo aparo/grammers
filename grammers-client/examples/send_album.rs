@@ -10,11 +10,10 @@ use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerAuth, PeerId, PeerRef};
 use grammers_tl_types as tl;
-
 use simple_logger::SimpleLogger;
 use tokio::runtime;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SESSION_FILE: &str = "me.session";
 
@@ -62,7 +61,7 @@ async fn async_main() -> Result<()> {
         .await?
         .ok_or("no peer with username")?
         .to_ref()
-        .await
+        .await?
         .unwrap();
 
     let messages = client.get_messages_by_id(peer, &[437, 438]).await?;

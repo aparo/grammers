@@ -17,6 +17,7 @@ mod dialog;
 mod participant;
 pub use action::ActionSender;
 mod channel;
+mod community;
 mod group;
 mod peer_map;
 mod permissions;
@@ -24,7 +25,9 @@ mod user;
 
 pub use channel::Channel;
 pub use chats::{AdminRightsBuilder, BannedRightsBuilder};
+pub use community::Community;
 pub use dialog::Dialog;
+use grammers_mtsender::InvocationError;
 use grammers_session::types::{PeerAuth, PeerId, PeerInfo, PeerRef};
 use grammers_tl_types as tl;
 pub use group::Group;
@@ -34,6 +37,19 @@ pub use permissions::{Permissions, Restrictions};
 pub use user::{Platform, RestrictionReason, User};
 
 use crate::{Client, media::ChatPhoto};
+
+/// Resolve a peer to its [`PeerRef`], using the cached `auth` if present or
+/// falling back to the session cache. Shared by `Channel`, `Group` and `User`.
+pub(crate) async fn to_ref(
+    client: &Client,
+    id: PeerId,
+    auth: Option<PeerAuth>,
+) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
+    match auth {
+        Some(auth) => Ok(Some(PeerRef { id, auth })),
+        None => client.0.session.peer_ref(id).await,
+    }
+}
 
 /// A user, group, or broadcast channel.
 ///
@@ -53,6 +69,9 @@ pub enum Peer {
 
     /// A broadcast [`Channel`].
     Channel(Channel),
+
+    /// A [`Community`].
+    Community(Community),
 }
 
 impl Peer {
@@ -81,6 +100,8 @@ impl Peer {
                     Self::Group(Group::from_raw(client, chat))
                 }
             }
+            C::CommunityForbidden(_) => Self::Community(Community::from_raw(client, chat)),
+            C::Community(_) => Self::Community(Community::from_raw(client, chat)),
         }
     }
 
@@ -97,6 +118,7 @@ impl Peer {
             Self::User(user) => user.id(),
             Self::Group(group) => group.id(),
             Self::Channel(channel) => channel.id(),
+            Self::Community(community) => community.id(),
         }
     }
 
@@ -106,17 +128,21 @@ impl Peer {
             Self::User(user) => user.auth(),
             Self::Group(group) => group.auth(),
             Self::Channel(channel) => channel.auth(),
+            Self::Community(community) => community.auth(),
         }
     }
 
     /// Convert the peer to its reference.
     ///
     /// This is only possible if the peer would be usable on all methods or if it is in the session cache.
-    pub async fn to_ref(&self) -> Option<PeerRef> {
+    pub async fn to_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
         match self {
             Self::User(user) => user.to_ref().await,
             Self::Group(group) => group.to_ref().await,
             Self::Channel(channel) => channel.to_ref().await,
+            Self::Community(community) => community.to_ref().await,
         }
     }
 
@@ -132,6 +158,7 @@ impl Peer {
             Self::User(user) => user.first_name(),
             Self::Group(group) => group.title(),
             Self::Channel(channel) => Some(channel.title()),
+            Self::Community(community) => Some(community.title()),
         }
     }
 
@@ -146,6 +173,7 @@ impl Peer {
             Self::User(user) => user.username(),
             Self::Group(group) => group.username(),
             Self::Channel(channel) => channel.username(),
+            Self::Community(_) => None,
         }
     }
 
@@ -160,43 +188,33 @@ impl Peer {
             Self::User(user) => user.usernames(),
             Self::Group(group) => group.usernames(),
             Self::Channel(channel) => channel.usernames(),
+            Self::Community(_) => Vec::new(),
         }
     }
 
     // Return the profile picture or chat photo of this peer, if any.
     //
     // This does not fetch the photo, but it may query the session to fetch the peer information.
-    pub async fn photo(&self, big: bool) -> Option<ChatPhoto> {
-        let peer = self.to_ref().await?.into();
-        match self {
-            Self::User(user) => user.photo().map(|x| ChatPhoto {
-                raw: tl::enums::InputFileLocation::InputPeerPhotoFileLocation(
-                    tl::types::InputPeerPhotoFileLocation {
-                        big,
-                        peer,
-                        photo_id: x.photo_id,
-                    },
-                ),
-            }),
-            Self::Group(group) => group.photo().map(|x| ChatPhoto {
-                raw: tl::enums::InputFileLocation::InputPeerPhotoFileLocation(
-                    tl::types::InputPeerPhotoFileLocation {
-                        big,
-                        peer,
-                        photo_id: x.photo_id,
-                    },
-                ),
-            }),
-            Self::Channel(channel) => channel.photo().map(|x| ChatPhoto {
-                raw: tl::enums::InputFileLocation::InputPeerPhotoFileLocation(
-                    tl::types::InputPeerPhotoFileLocation {
-                        big,
-                        peer,
-                        photo_id: x.photo_id,
-                    },
-                ),
-            }),
-        }
+    pub async fn photo(&self, big: bool) -> Result<Option<ChatPhoto>, InvocationError> {
+        let peer = match self.to_ref().await? {
+            None => return Ok(None),
+            Some(x) => x.into(),
+        };
+        let photo_id = match self {
+            Self::User(user) => user.photo().map(|x| x.photo_id),
+            Self::Group(group) => group.photo().map(|x| x.photo_id),
+            Self::Channel(channel) => channel.photo().map(|x| x.photo_id),
+            Self::Community(community) => community.photo().map(|x| x.photo_id),
+        };
+        Ok(photo_id.map(|photo_id| ChatPhoto {
+            raw: tl::enums::InputFileLocation::InputPeerPhotoFileLocation(
+                tl::types::InputPeerPhotoFileLocation {
+                    big,
+                    peer,
+                    photo_id,
+                },
+            ),
+        }))
     }
 }
 
@@ -212,6 +230,7 @@ impl<'a> From<&'a Peer> for PeerInfo {
             Peer::User(user) => <PeerInfo as From<&'a User>>::from(user),
             Peer::Group(group) => <PeerInfo as From<&'a Group>>::from(group),
             Peer::Channel(channel) => <PeerInfo as From<&'a Channel>>::from(channel),
+            Peer::Community(community) => <PeerInfo as From<&'a Community>>::from(community),
         }
     }
 }

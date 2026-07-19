@@ -64,6 +64,10 @@ impl Group {
                     }
                 }
             }
+            C::CommunityForbidden(_) => {
+                panic!("tried to create megagroup channel from community forbidden")
+            }
+            C::Community(_) => panic!("tried to create megagroup channel from community"),
         }
     }
 
@@ -80,6 +84,8 @@ impl Group {
             Chat::Forbidden(chat) => PeerId::chat_unchecked(chat.id),
             Chat::Channel(channel) => PeerId::channel_unchecked(channel.id),
             Chat::ChannelForbidden(channel) => PeerId::channel_unchecked(channel.id),
+            Chat::CommunityForbidden(community) => PeerId::channel_unchecked(community.id),
+            Chat::Community(community) => PeerId::channel_unchecked(community.id),
         }
     }
 
@@ -98,18 +104,25 @@ impl Group {
                     .map(PeerAuth::from_hash);
             }
             Chat::ChannelForbidden(channel) => PeerAuth::from_hash(channel.access_hash),
+            Chat::CommunityForbidden(community) => {
+                return community.access_hash.map(PeerAuth::from_hash);
+            }
+            Chat::Community(community) => {
+                return community
+                    .access_hash
+                    .filter(|_| !community.min)
+                    .map(PeerAuth::from_hash);
+            }
         })
     }
 
     /// Convert the group to its reference.
     ///
     /// This is only possible if the peer would be usable on all methods or if it is in the session cache.
-    pub async fn to_ref(&self) -> Option<PeerRef> {
-        let id = self.id();
-        match self.auth() {
-            Some(auth) => Some(PeerRef { id, auth }),
-            None => self.client.0.session.peer_ref(id).await,
-        }
+    pub async fn to_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
+        super::to_ref(&self.client, self.id(), self.auth()).await
     }
 
     /// Return the title of this group.
@@ -124,6 +137,8 @@ impl Group {
             Chat::Forbidden(chat) => Some(chat.title.as_str()),
             Chat::Channel(channel) => Some(channel.title.as_str()),
             Chat::ChannelForbidden(channel) => Some(channel.title.as_str()),
+            Chat::CommunityForbidden(community) => Some(community.title.as_str()),
+            Chat::Community(community) => Some(community.title.as_str()),
         }
     }
 
@@ -137,7 +152,12 @@ impl Group {
         use tl::enums::Chat;
 
         match &self.raw {
-            Chat::Empty(_) | Chat::Chat(_) | Chat::Forbidden(_) | Chat::ChannelForbidden(_) => None,
+            Chat::Empty(_)
+            | Chat::Chat(_)
+            | Chat::Forbidden(_)
+            | Chat::ChannelForbidden(_)
+            | Chat::CommunityForbidden(_)
+            | Chat::Community(_) => None,
             Chat::Channel(channel) => channel.username.as_deref(),
         }
     }
@@ -152,9 +172,12 @@ impl Group {
         use tl::enums::Chat;
 
         match &self.raw {
-            Chat::Empty(_) | Chat::Chat(_) | Chat::Forbidden(_) | Chat::ChannelForbidden(_) => {
-                Vec::new()
-            }
+            Chat::Empty(_)
+            | Chat::Chat(_)
+            | Chat::Forbidden(_)
+            | Chat::ChannelForbidden(_)
+            | Chat::CommunityForbidden(_)
+            | Chat::Community(_) => Vec::new(),
             Chat::Channel(channel) => {
                 channel
                     .usernames
@@ -178,12 +201,17 @@ impl Group {
         match &self.raw {
             tl::enums::Chat::Empty(_)
             | tl::enums::Chat::Forbidden(_)
-            | tl::enums::Chat::ChannelForbidden(_) => None,
+            | tl::enums::Chat::ChannelForbidden(_)
+            | tl::enums::Chat::CommunityForbidden(_) => None,
             tl::enums::Chat::Chat(chat) => match &chat.photo {
                 tl::enums::ChatPhoto::Empty => None,
                 tl::enums::ChatPhoto::Photo(photo) => Some(photo),
             },
             tl::enums::Chat::Channel(channel) => match &channel.photo {
+                tl::enums::ChatPhoto::Empty => None,
+                tl::enums::ChatPhoto::Photo(photo) => Some(photo),
+            },
+            tl::enums::Chat::Community(community) => match &community.photo {
                 tl::enums::ChatPhoto::Empty => None,
                 tl::enums::ChatPhoto::Photo(photo) => Some(photo),
             },
@@ -197,7 +225,11 @@ impl Group {
         use tl::enums::Chat as C;
 
         match &self.raw {
-            C::Empty(_) | C::Chat(_) | C::Forbidden(_) => false,
+            C::Empty(_)
+            | C::Chat(_)
+            | C::Forbidden(_)
+            | C::CommunityForbidden(_)
+            | C::Community(_) => false,
             C::Channel(_) | C::ChannelForbidden(_) => true,
         }
     }

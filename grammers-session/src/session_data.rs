@@ -50,16 +50,18 @@ impl Default for SessionData {
 
 impl SessionData {
     /// Imports all information from this session data to a type implementing `Session`.
-    pub async fn import_to<S: Session>(&self, session: &S) {
-        session.set_home_dc_id(self.home_dc).await;
+    pub async fn import_to<S: Session>(&self, session: &S) -> Result<(), S::Error> {
+        session.set_home_dc_id(self.home_dc).await?;
         for dc_option in self.dc_options.values() {
-            session.set_dc_option(dc_option).await;
+            session.set_dc_option(dc_option).await?;
         }
         for peer in self.peer_infos.values() {
-            session.cache_peer(peer).await;
+            session.cache_peer(peer).await?;
         }
         session
             .set_update_state(UpdateState::All(self.updates_state.clone()))
-            .await;
+            .await?;
+
+        Ok(())
     }
 }

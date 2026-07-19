@@ -22,6 +22,12 @@ pub struct Message {
     pub state: State,
 }
 
+impl Message {
+    pub fn into_inner(self) -> crate::message::Message {
+        self.msg
+    }
+}
+
 impl Deref for Message {
     type Target = crate::message::Message;
 

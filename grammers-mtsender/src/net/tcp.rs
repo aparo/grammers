@@ -7,6 +7,7 @@
 // except according to those terms.
 
 use log::info;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 pub use tokio::net::tcp::{ReadHalf, WriteHalf};
 
@@ -66,9 +67,12 @@ impl NetStream {
         let password = proxy.password().unwrap_or("");
         let socks_addr = match host {
             Host::Domain(domain) => {
-                let resolver = Resolver::builder_tokio().unwrap().build();
-                let response = resolver.lookup_ip(domain).await?;
-                let socks_ip_addr = response.into_iter().next().ok_or(io::Error::new(
+                let resolver = Resolver::builder_tokio().unwrap().build().unwrap();
+                let response = resolver
+                    .lookup_ip(domain)
+                    .await
+                    .map_err(|err| io::Error::new(ErrorKind::Other, err))?;
+                let socks_ip_addr = response.iter().next().ok_or(io::Error::new(
                     ErrorKind::NotFound,
                     format!("proxy host did not return any ip address: {}", domain),
                 ))?;
@@ -100,6 +104,14 @@ impl NetStream {
                 ErrorKind::ConnectionAborted,
                 format!("proxy scheme not supported: {}", scheme),
             )),
+        }
+    }
+
+    pub(crate) async fn disconnect(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.shutdown().await,
+            #[cfg(feature = "proxy")]
+            Self::ProxySocks5(stream) => stream.shutdown().await,
         }
     }
 }

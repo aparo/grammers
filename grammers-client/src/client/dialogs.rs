@@ -100,7 +100,7 @@ impl DialogIter {
                         id: channel.channel_id,
                         pts: *pts,
                     })
-                    .await;
+                    .await?;
             }
         }
 

@@ -120,6 +120,8 @@ pub enum ChannelKind {
     Megagroup,
     /// Value used for a channel with its [`tl::types::Channel::gigagroup`] flag set to `true`.
     Gigagroup,
+    /// Value used for a channel of [`tl::types::Community`] or [`tl::types::CommunityForbidden`] type.
+    Community,
 }
 
 /// Sentinel value used to represent the self-user
@@ -285,10 +287,11 @@ impl PeerId {
     /// # Examples
     ///
     /// ```
-    /// # async fn f(session: &dyn grammers_session::Session, peer_id: grammers_session::types::PeerId) -> Result<(), Box<dyn std::error::Error>> {
+    /// # async fn f(session: &grammers_session::ErasedSession, peer_id: grammers_session::types::PeerId) -> Result<(), Box<dyn std::error::Error>> {
     /// let peer_ref = session
     ///     .peer_ref(peer_id)
     ///     .await
+    ///     .unwrap()
     ///     .unwrap_or(peer_id.to_ambient_ref());
     ///
     /// // Can try using the `peer_ref` to e.g. send messages now, even if no auth was found in cache,
@@ -630,6 +633,8 @@ impl<'a> From<&'a tl::enums::Chat> for PeerRef {
             Chat::Forbidden(chat) => <Self as From<&_>>::from(chat),
             Chat::Channel(channel) => <Self as From<&_>>::from(channel),
             Chat::ChannelForbidden(channel) => <Self as From<&_>>::from(channel),
+            Chat::CommunityForbidden(community) => <Self as From<&_>>::from(community),
+            Chat::Community(community) => <Self as From<&_>>::from(community),
         }
     }
 }
@@ -712,6 +717,42 @@ impl<'a> From<&'a tl::types::ChannelForbidden> for PeerRef {
     }
 }
 
+impl From<tl::types::CommunityForbidden> for PeerRef {
+    #[inline]
+    fn from(community: tl::types::CommunityForbidden) -> Self {
+        <Self as From<&tl::types::CommunityForbidden>>::from(&community)
+    }
+}
+impl<'a> From<&'a tl::types::CommunityForbidden> for PeerRef {
+    fn from(community: &'a tl::types::CommunityForbidden) -> Self {
+        Self {
+            id: PeerId::channel_unchecked(community.id),
+            auth: community
+                .access_hash
+                .map(PeerAuth::from_hash)
+                .unwrap_or(PeerAuth::default()),
+        }
+    }
+}
+
+impl From<tl::types::Community> for PeerRef {
+    #[inline]
+    fn from(community: tl::types::Community) -> Self {
+        <Self as From<&tl::types::Community>>::from(&community)
+    }
+}
+impl<'a> From<&'a tl::types::Community> for PeerRef {
+    fn from(community: &'a tl::types::Community) -> Self {
+        Self {
+            id: PeerId::channel_unchecked(community.id),
+            auth: community
+                .access_hash
+                .map(PeerAuth::from_hash)
+                .unwrap_or(PeerAuth::default()),
+        }
+    }
+}
+
 impl From<PeerId> for tl::enums::Peer {
     #[inline]
     fn from(peer: PeerId) -> Self {
@@ -734,12 +775,25 @@ impl<'a> From<&'a PeerId> for tl::enums::Peer {
     }
 }
 
-impl From<PeerRef> for tl::enums::InputPeer {
-    #[inline]
-    fn from(peer: PeerRef) -> Self {
-        <Self as From<&PeerRef>>::from(&peer)
-    }
+/// Generate owned `From<PeerRef>` impls that forward to the `From<&PeerRef>` impl.
+macro_rules! forward_peer_ref_from {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl From<PeerRef> for $ty {
+            #[inline]
+            fn from(peer: PeerRef) -> Self {
+                <Self as From<&PeerRef>>::from(&peer)
+            }
+        }
+    )+};
 }
+
+forward_peer_ref_from!(
+    tl::enums::InputPeer,
+    tl::enums::InputUser,
+    i64,
+    tl::enums::InputChannel,
+);
+
 impl<'a> From<&'a PeerRef> for tl::enums::InputPeer {
     fn from(peer: &'a PeerRef) -> Self {
         match peer.id.kind() {
@@ -761,12 +815,6 @@ impl<'a> From<&'a PeerRef> for tl::enums::InputPeer {
     }
 }
 
-impl From<PeerRef> for tl::enums::InputUser {
-    #[inline]
-    fn from(peer: PeerRef) -> Self {
-        <Self as From<&PeerRef>>::from(&peer)
-    }
-}
 impl<'a> From<&'a PeerRef> for tl::enums::InputUser {
     fn from(peer: &'a PeerRef) -> Self {
         match peer.id.kind() {
@@ -783,12 +831,6 @@ impl<'a> From<&'a PeerRef> for tl::enums::InputUser {
     }
 }
 
-impl From<PeerRef> for i64 {
-    #[inline]
-    fn from(peer: PeerRef) -> Self {
-        <Self as From<&PeerRef>>::from(&peer)
-    }
-}
 impl<'a> From<&'a PeerRef> for i64 {
     fn from(peer: &'a PeerRef) -> Self {
         match peer.id.kind() {
@@ -799,12 +841,6 @@ impl<'a> From<&'a PeerRef> for i64 {
     }
 }
 
-impl From<PeerRef> for tl::enums::InputChannel {
-    #[inline]
-    fn from(peer: PeerRef) -> Self {
-        <Self as From<&PeerRef>>::from(&peer)
-    }
-}
 impl<'a> From<&'a PeerRef> for tl::enums::InputChannel {
     fn from(peer: &'a PeerRef) -> Self {
         match peer.id.kind() {
@@ -837,6 +873,12 @@ impl<'a> From<&'a tl::enums::Chat> for PeerInfo {
             }
             tl::enums::Chat::ChannelForbidden(channel) => {
                 <Self as From<&tl::types::ChannelForbidden>>::from(&channel)
+            }
+            tl::enums::Chat::CommunityForbidden(community) => {
+                <Self as From<&tl::types::CommunityForbidden>>::from(&community)
+            }
+            tl::enums::Chat::Community(community) => {
+                <Self as From<&tl::types::Community>>::from(&community)
             }
         }
     }
@@ -955,6 +997,41 @@ impl<'a> From<&'a tl::types::ChannelForbidden> for PeerInfo {
             id: channel.id,
             auth: Some(PeerAuth(channel.access_hash)),
             kind: <ChannelKind as TryFrom<&'a tl::types::ChannelForbidden>>::try_from(channel).ok(),
+        }
+    }
+}
+
+impl From<tl::types::CommunityForbidden> for PeerInfo {
+    #[inline]
+    fn from(community: tl::types::CommunityForbidden) -> Self {
+        <Self as From<&tl::types::CommunityForbidden>>::from(&community)
+    }
+}
+impl<'a> From<&'a tl::types::CommunityForbidden> for PeerInfo {
+    fn from(community: &'a tl::types::CommunityForbidden) -> Self {
+        Self::Channel {
+            id: community.id,
+            auth: community.access_hash.map(PeerAuth::from_hash),
+            kind: Some(ChannelKind::Community),
+        }
+    }
+}
+
+impl From<tl::types::Community> for PeerInfo {
+    #[inline]
+    fn from(community: tl::types::Community) -> Self {
+        <Self as From<&tl::types::Community>>::from(&community)
+    }
+}
+impl<'a> From<&'a tl::types::Community> for PeerInfo {
+    fn from(community: &'a tl::types::Community) -> Self {
+        Self::Channel {
+            id: community.id,
+            auth: community
+                .access_hash
+                .map(PeerAuth)
+                .filter(|_| !community.min),
+            kind: Some(ChannelKind::Community),
         }
     }
 }

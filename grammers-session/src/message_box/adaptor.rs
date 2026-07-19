@@ -97,6 +97,7 @@ fn update_short_message(short: tl::types::UpdateShortMessage) -> tl::types::Upda
                 suggested_post: None,
                 schedule_repeat_period: None,
                 summary_from_language: None,
+                rich_message: None,
             }
             .into(),
             pts: short.pts,
@@ -169,6 +170,7 @@ fn update_short_chat_message(
                 suggested_post: None,
                 schedule_repeat_period: None,
                 summary_from_language: None,
+                rich_message: None,
             }
             .into(),
             pts: short.pts,
@@ -285,6 +287,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                                             reply_to_scheduled: false,
                                             forum_topic: false,
                                             quote: i.quote_offset.is_some(),
+                                            reply_to_ephemeral: false,
                                             reply_to_msg_id: Some(i.reply_to_msg_id),
                                             reply_to_peer_id: i
                                                 .reply_to_peer_id
@@ -310,6 +313,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                                     ))
                                 }
                                 tl::enums::InputReplyTo::MonoForum(_) => None,
+                                tl::enums::InputReplyTo::EphemeralMessage(_) => None,
                             })
                             .flatten(),
                         date: update.date,
@@ -339,6 +343,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
                         suggested_post: None,
                         schedule_repeat_period: None,
                         summary_from_language: None,
+                        rich_message: None,
                     }
                     .into(),
                     pts: update.pts,
@@ -363,10 +368,11 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
         UpdatesLike::AffectedChannelMessages {
             affected,
             channel_id,
+            message_ids,
         } => Ok(update_short(tl::types::UpdateShort {
             update: tl::types::UpdateDeleteChannelMessages {
                 channel_id,
-                messages: Vec::new(),
+                messages: message_ids,
                 pts: affected.pts,
                 pts_count: affected.pts_count,
             }
@@ -374,6 +380,7 @@ pub(super) fn adapt(updates: UpdatesLike) -> Result<tl::types::UpdatesCombined, 
             date: 0,
         })),
         UpdatesLike::InvitedUsers(invited) => adapt_updates(invited.updates),
+        UpdatesLike::ChatInviteJoinResult(result) => adapt_updates(result.updates),
         UpdatesLike::ConnectionClosed | UpdatesLike::MalformedUpdates => return Err(Gap),
     }
 }
@@ -402,6 +409,9 @@ pub(super) fn adapt_channel_difference(
                         .expect("channelDifferenceTooLong dialog did not actually contain a pts"),
                     tl::enums::Dialog::Folder(_) => {
                         panic!("received a folder on channelDifferenceTooLong")
+                    }
+                    tl::enums::Dialog::Community(_) => {
+                        panic!("received a community on channelDifferenceTooLong")
                     }
                 },
                 timeout: difference.timeout,

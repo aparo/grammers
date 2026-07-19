@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use grammers_session::Session;
+use grammers_session::ErasedSession;
 use grammers_session::types::{PeerId, PeerRef};
 
 use crate::peer::{Peer, User};
@@ -25,7 +25,7 @@ use crate::peer::{Peer, User};
 #[derive(Clone)]
 pub struct PeerMap {
     pub(crate) map: Arc<HashMap<PeerId, Peer>>,
-    pub(crate) session: Arc<dyn Session>,
+    pub(crate) session: Arc<ErasedSession>,
 }
 
 impl PeerMap {
@@ -35,7 +35,10 @@ impl PeerMap {
     }
 
     /// Retrieve a non-min `PeerRef` from either the in-memory cache or the session.
-    pub async fn get_ref(&self, peer: PeerId) -> Option<PeerRef> {
+    pub async fn get_ref(
+        &self,
+        peer: PeerId,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
         match self.map.get(&peer) {
             Some(peer) => peer.to_ref().await,
             None => self.session.peer_ref(peer).await,

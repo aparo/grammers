@@ -10,6 +10,33 @@ use grammers_tl_types as tl;
 
 use super::Downloadable;
 
+/// Build the raw input file location for a photo or document thumbnail.
+fn raw_input_location(
+    from_document: bool,
+    id: i64,
+    access_hash: i64,
+    file_reference: Vec<u8>,
+    thumb_size: String,
+) -> tl::enums::InputFileLocation {
+    if !from_document {
+        tl::types::InputPhotoFileLocation {
+            id,
+            access_hash,
+            file_reference,
+            thumb_size,
+        }
+        .into()
+    } else {
+        tl::types::InputDocumentFileLocation {
+            id,
+            access_hash,
+            file_reference,
+            thumb_size,
+        }
+        .into()
+    }
+}
+
 /// Thumbnail of a [`Photo`] or [`Document`].
 ///
 /// [`Photo`]: super::Photo
@@ -200,23 +227,13 @@ pub struct Size {
 
 impl Size {
     pub fn to_raw_input_location(&self) -> Option<tl::enums::InputFileLocation> {
-        let input_location = if !self.from_document {
-            tl::enums::InputFileLocation::from(tl::types::InputPhotoFileLocation {
-                id: self.id,
-                access_hash: self.access_hash,
-                file_reference: self.file_reference.clone(),
-                thumb_size: self.photo_type.clone(),
-            })
-        } else {
-            tl::enums::InputFileLocation::from(tl::types::InputDocumentFileLocation {
-                id: self.id,
-                access_hash: self.access_hash,
-                file_reference: self.file_reference.clone(),
-                thumb_size: self.photo_type.clone(),
-            })
-        };
-
-        Some(input_location)
+        Some(raw_input_location(
+            self.from_document,
+            self.id,
+            self.access_hash,
+            self.file_reference.clone(),
+            self.photo_type.clone(),
+        ))
     }
 }
 
@@ -330,23 +347,13 @@ pub struct ProgressiveSize {
 
 impl ProgressiveSize {
     pub fn to_raw_input_location(&self) -> Option<tl::enums::InputFileLocation> {
-        let input_location = if !self.from_document {
-            tl::enums::InputFileLocation::from(tl::types::InputPhotoFileLocation {
-                id: self.id,
-                access_hash: self.access_hash,
-                file_reference: self.file_reference.clone(),
-                thumb_size: self.photo_type.clone(),
-            })
-        } else {
-            tl::enums::InputFileLocation::from(tl::types::InputDocumentFileLocation {
-                id: self.id,
-                access_hash: self.access_hash,
-                file_reference: self.file_reference.clone(),
-                thumb_size: self.photo_type.clone(),
-            })
-        };
-
-        Some(input_location)
+        Some(raw_input_location(
+            self.from_document,
+            self.id,
+            self.access_hash,
+            self.file_reference.clone(),
+            self.photo_type.clone(),
+        ))
     }
 }
 

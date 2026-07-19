@@ -115,12 +115,10 @@ impl User {
     /// Convert the user to its reference.
     ///
     /// This is only possible if the peer would be usable on all methods or if it is in the session cache.
-    pub async fn to_ref(&self) -> Option<PeerRef> {
-        let id = self.id();
-        match self.auth() {
-            Some(auth) => Some(PeerRef { id, auth }),
-            None => self.client.0.session.peer_ref(id).await,
-        }
+    pub async fn to_ref(
+        &self,
+    ) -> Result<Option<PeerRef>, Box<dyn std::error::Error + Send + Sync>> {
+        super::to_ref(&self.client, self.id(), self.auth()).await
     }
 
     /// Return the first name of this user.

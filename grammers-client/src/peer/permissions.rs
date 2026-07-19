@@ -44,6 +44,7 @@ impl Permissions {
                 delete_stories: true,
                 manage_direct_messages: true,
                 manage_ranks: true,
+                manage_linked_peers: true,
             },
         }
     }

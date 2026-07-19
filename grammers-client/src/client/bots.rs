@@ -184,6 +184,7 @@ impl Client {
                     no_webpage: !message.link_preview,
                     reply_markup: message.reply_markup,
                     invert_media: message.invert_media,
+                    rich_message: None,
                 },
             )
             .await
@@ -196,6 +197,7 @@ impl Client {
                 no_webpage: !message.link_preview,
                 reply_markup: message.reply_markup,
                 invert_media: message.invert_media,
+                rich_message: None,
             })
             .await
         }

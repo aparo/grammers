@@ -137,6 +137,7 @@ impl<F: Future<Output = BuilderRes>> AdminRightsBuilder<F> {
                     delete_stories: false,
                     manage_direct_messages: false,
                     manage_ranks: false,
+                    manage_linked_peers: false,
                 },
             }),
             fut_gen,
@@ -211,6 +212,7 @@ impl<F: Future<Output = BuilderRes>> AdminRightsBuilder<F> {
                         delete_stories: true,
                         manage_direct_messages: true, // TODO check it
                         manage_ranks: true,
+                        manage_linked_peers: true,
                     };
                     break;
                 }
@@ -422,6 +424,7 @@ impl<F: Future<Output = BuilderRes>> BannedRightsBuilder<F> {
                     send_plain: false,
                     edit_rank: false,
                     send_reactions: false,
+                    manage_linked_peers: false,
                     until_date: 0,
                 },
             }),

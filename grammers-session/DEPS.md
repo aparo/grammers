@@ -7,10 +7,6 @@ Used for dealing with correct update processing.
 The serialization and deserialization traits are also used for storing and loading the session
 into and from bytes.
 
-## futures-core
-
-Used to make the `Session` trait dyn-compatible.
-
 ## log
 
 Used to log messages during update processing.

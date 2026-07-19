@@ -7,10 +7,11 @@
 // except according to those terms.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::net::AddrParseError;
 use std::path::Path;
 use std::sync::Mutex;
 
-use futures_core::future::BoxFuture;
 use libsql::{named_params, params};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -18,7 +19,7 @@ use crate::types::{
     ChannelKind, ChannelState, DcOption, PeerAuth, PeerId, PeerInfo, PeerKind, UpdateState,
     UpdatesState,
 };
-use crate::{DEFAULT_DC, KNOWN_DC_OPTIONS, Session};
+use crate::{BoxFuture, DEFAULT_DC, KNOWN_DC_OPTIONS, Session};
 
 const VERSION: i64 = 1;
 
@@ -35,6 +36,41 @@ pub struct SqliteSession {
     cache: Mutex<Cache>,
 }
 
+#[derive(Debug)]
+pub enum SqliteSessionError {
+    Poisoned,
+    AddrParse(std::net::AddrParseError),
+    Sql(libsql::Error),
+    InvalidAuthKeyLength(usize),
+}
+
+impl std::error::Error for SqliteSessionError {}
+
+impl fmt::Display for SqliteSessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SqliteSessionError::Poisoned => write!(f, "session lock is poisoned"),
+            SqliteSessionError::AddrParse(_) => write!(f, "invalid socket address syntax"),
+            SqliteSessionError::Sql(err) => write!(f, "{err}"),
+            SqliteSessionError::InvalidAuthKeyLength(actual) => {
+                write!(f, "invalid auth_key length: expected 256, got {actual}")
+            }
+        }
+    }
+}
+
+impl From<AddrParseError> for SqliteSessionError {
+    fn from(x: AddrParseError) -> Self {
+        Self::AddrParse(x)
+    }
+}
+
+impl From<libsql::Error> for SqliteSessionError {
+    fn from(x: libsql::Error) -> Self {
+        Self::Sql(x)
+    }
+}
+
 #[repr(u8)]
 enum PeerSubtype {
     UserSelf = 1,
@@ -43,6 +79,7 @@ enum PeerSubtype {
     Megagroup = 4,
     Broadcast = 8,
     Gigagroup = 12,
+    Community = 16,
 }
 
 impl Database {
@@ -149,13 +186,13 @@ impl Database {
     async fn fetch_all<
         T,
         P: libsql::params::IntoParams,
-        F: FnMut(libsql::Row) -> libsql::Result<T>,
+        F: FnMut(libsql::Row) -> Result<T, SqliteSessionError>,
     >(
         &self,
         statement: &str,
         params: P,
         mut select: F,
-    ) -> libsql::Result<Vec<T>> {
+    ) -> Result<Vec<T>, SqliteSessionError> {
         let statement = self.0.prepare(statement).await?;
         let mut rows = statement.query(params).await?;
         let mut result = Vec::new();
@@ -169,7 +206,7 @@ impl Database {
 impl SqliteSession {
     /// Open a connection to the SQLite database at `path`,
     /// creating one if it doesn't exist.
-    pub async fn open<P: AsRef<Path>>(path: P) -> libsql::Result<Self> {
+    pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self, SqliteSessionError> {
         let conn = libsql::Builder::new_local(path).build().await?.connect()?;
         let db = Database(conn);
         db.init().await?;
@@ -185,11 +222,14 @@ impl SqliteSession {
             .fetch_all("SELECT * FROM dc_option", named_params![], |row| {
                 Ok(DcOption {
                     id: row.get::<i32>(0)?,
-                    ipv4: row.get::<String>(1)?.parse().unwrap(),
-                    ipv6: row.get::<String>(2)?.parse().unwrap(),
-                    auth_key: row
-                        .get::<Option<Vec<u8>>>(3)?
-                        .map(|auth_key| auth_key.try_into().unwrap()),
+                    ipv4: row.get::<String>(1)?.parse()?,
+                    ipv6: row.get::<String>(2)?.parse()?,
+                    auth_key: match row.get::<Option<Vec<u8>>>(3)? {
+                        None => None,
+                        Some(auth_key) => Some(auth_key.try_into().map_err(|v: Vec<u8>| {
+                            SqliteSessionError::InvalidAuthKeyLength(v.len())
+                        })?),
+                    },
                 })
             })
             .await?
@@ -208,37 +248,45 @@ impl SqliteSession {
 }
 
 impl Session for SqliteSession {
-    fn home_dc_id(&self) -> i32 {
-        self.cache.lock().unwrap().home_dc
+    type Error = SqliteSessionError;
+
+    fn home_dc_id(&self) -> Result<i32, SqliteSessionError> {
+        Ok(self
+            .cache
+            .lock()
+            .map_err(|_| SqliteSessionError::Poisoned)?
+            .home_dc)
     }
 
-    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, ()> {
-        self.cache.lock().unwrap().home_dc = dc_id;
+    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, Result<(), SqliteSessionError>> {
+        let ok = match self.cache.lock() {
+            Err(_) => Err(SqliteSessionError::Poisoned),
+            Ok(mut x) => {
+                x.home_dc = dc_id;
+                Ok(())
+            }
+        };
         Box::pin(async move {
-            let transaction = self
-                .database
-                .lock()
-                .await
-                .begin_transaction()
-                .await
-                .unwrap();
+            ok?;
+
+            let transaction = self.database.lock().await.begin_transaction().await?;
             transaction
                 .execute("DELETE FROM dc_home", params![])
-                .await
-                .unwrap();
+                .await?;
             let stmt = transaction
                 .prepare("INSERT INTO dc_home VALUES (:dc_id)")
-                .await
-                .unwrap();
-            stmt.execute(named_params! {":dc_id": dc_id}).await.unwrap();
-            transaction.commit().await.unwrap();
+                .await?;
+            stmt.execute(named_params! {":dc_id": dc_id}).await?;
+            transaction.commit().await?;
+            Ok(())
         })
     }
 
-    fn dc_option(&self, dc_id: i32) -> Option<DcOption> {
-        self.cache
+    fn dc_option(&self, dc_id: i32) -> Result<Option<DcOption>, SqliteSessionError> {
+        Ok(self
+            .cache
             .lock()
-            .unwrap()
+            .map_err(|_| SqliteSessionError::Poisoned)?
             .dc_options
             .get(&dc_id)
             .cloned()
@@ -247,18 +295,22 @@ impl Session for SqliteSession {
                     .iter()
                     .find(|dc_option| dc_option.id == dc_id)
                     .cloned()
-            })
+            }))
     }
 
-    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, ()> {
-        self.cache
-            .lock()
-            .unwrap()
-            .dc_options
-            .insert(dc_option.id, dc_option.clone());
+    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, Result<(), SqliteSessionError>> {
+        let ok = match self.cache.lock() {
+            Err(_) => Err(SqliteSessionError::Poisoned),
+            Ok(mut x) => {
+                x.dc_options.insert(dc_option.id, dc_option.clone());
+                Ok(())
+            }
+        };
 
         let dc_option = dc_option.clone();
         Box::pin(async move {
+            ok?;
+
             let db = self.database.lock().await;
             db.0.execute(
                 "INSERT OR REPLACE INTO dc_option VALUES (:dc_id, :ipv4, :ipv6, :auth_key)",
@@ -269,12 +321,12 @@ impl Session for SqliteSession {
                     ":auth_key": dc_option.auth_key.map(|k| k.to_vec()),
                 },
             )
-            .await
-            .unwrap();
+            .await?;
+            Ok(())
         })
     }
 
-    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Option<PeerInfo>> {
+    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerInfo>, SqliteSessionError>> {
         Box::pin(async move {
             let db = self.database.lock().await;
             let map_row = |row: libsql::Row| {
@@ -307,30 +359,28 @@ impl Session for SqliteSession {
                 })
             };
 
-            if let Some(peer_id) = peer.bot_api_dialog_id() {
+            Ok(if let Some(peer_id) = peer.bot_api_dialog_id() {
                 db.fetch_one(
                     "SELECT * FROM peer_info WHERE peer_id = :peer_id LIMIT 1",
                     named_params! {":peer_id": peer_id},
                     map_row,
                 )
-                .await
-                .unwrap()
+                .await?
             } else {
                 db.fetch_one(
                     "SELECT * FROM peer_info WHERE subtype & :type LIMIT 1",
                     named_params! {":type": PeerSubtype::UserSelf as i64},
                     map_row,
                 )
-                .await
-                .unwrap()
-            }
+                .await?
+            })
         })
     }
 
-    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, ()> {
+    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, Result<(), SqliteSessionError>> {
         let peer = peer.clone();
         Box::pin(async move {
-            let peer = if let Some(mut existing_peer) = self.peer(peer.id()).await {
+            let peer = if let Some(mut existing_peer) = self.peer(peer.id()).await? {
                 existing_peer.extend_info(&peer);
                 existing_peer
             } else {
@@ -340,8 +390,7 @@ impl Session for SqliteSession {
             let db = self.database.lock().await;
             let stmt =
                 db.0.prepare("INSERT OR REPLACE INTO peer_info VALUES (:peer_id, :hash, :subtype)")
-                    .await
-                    .unwrap();
+                    .await?;
             let subtype = match peer {
                 PeerInfo::User { bot, is_self, .. } => {
                     match (bot.unwrap_or_default(), is_self.unwrap_or_default()) {
@@ -356,6 +405,7 @@ impl Session for SqliteSession {
                     ChannelKind::Megagroup => PeerSubtype::Megagroup,
                     ChannelKind::Broadcast => PeerSubtype::Broadcast,
                     ChannelKind::Gigagroup => PeerSubtype::Gigagroup,
+                    ChannelKind::Community => PeerSubtype::Community,
                 }),
             };
             let mut params = vec![];
@@ -369,11 +419,12 @@ impl Session for SqliteSession {
             if subtype.is_some() {
                 params.push((":subtype".to_owned(), subtype.unwrap()));
             }
-            stmt.execute(params).await.unwrap();
+            stmt.execute(params).await?;
+            Ok(())
         })
     }
 
-    fn updates_state(&self) -> BoxFuture<'_, UpdatesState> {
+    fn updates_state(&self) -> BoxFuture<'_, Result<UpdatesState, SqliteSessionError>> {
         Box::pin(async move {
             let db = self.database.lock().await;
             let mut state = db
@@ -390,8 +441,7 @@ impl Session for SqliteSession {
                         })
                     },
                 )
-                .await
-                .unwrap()
+                .await?
                 .unwrap_or_default();
             state.channels = db
                 .fetch_all("SELECT * FROM channel_state", named_params![], |row| {
@@ -400,23 +450,24 @@ impl Session for SqliteSession {
                         pts: row.get(1)?,
                     })
                 })
-                .await
-                .unwrap();
-            state
+                .await?;
+            Ok(state)
         })
     }
 
-    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, ()> {
+    fn set_update_state(
+        &self,
+        update: UpdateState,
+    ) -> BoxFuture<'_, Result<(), SqliteSessionError>> {
         Box::pin(async move {
             let db = self.database.lock().await;
-            let transaction = db.begin_transaction().await.unwrap();
+            let transaction = db.begin_transaction().await?;
 
             match update {
                 UpdateState::All(updates_state) => {
                     transaction
                         .execute("DELETE FROM update_state", params![])
-                        .await
-                        .unwrap();
+                        .await?;
                     transaction
                         .execute(
                             "INSERT INTO update_state VALUES (:pts, :qts, :date, :seq)",
@@ -427,13 +478,11 @@ impl Session for SqliteSession {
                                 ":seq": updates_state.seq,
                             },
                         )
-                        .await
-                        .unwrap();
+                        .await?;
 
                     transaction
                         .execute("DELETE FROM channel_state", params![])
-                        .await
-                        .unwrap();
+                        .await?;
                     for channel in updates_state.channels {
                         transaction
                             .execute(
@@ -443,8 +492,7 @@ impl Session for SqliteSession {
                                     ":pts": channel.pts,
                                 },
                             )
-                            .await
-                            .unwrap();
+                            .await?;
                     }
                 }
                 UpdateState::Primary { pts, date, seq } => {
@@ -454,8 +502,7 @@ impl Session for SqliteSession {
                             named_params![],
                             |_| Ok(()),
                         )
-                        .await
-                        .unwrap();
+                        .await?;
 
                     if previous.is_some() {
                         transaction
@@ -467,8 +514,7 @@ impl Session for SqliteSession {
                                     ":seq": seq,
                                 },
                             )
-                            .await
-                            .unwrap();
+                            .await?;
                     } else {
                         transaction
                             .execute(
@@ -479,8 +525,7 @@ impl Session for SqliteSession {
                                     ":seq": seq,
                                 },
                             )
-                            .await
-                            .unwrap();
+                            .await?;
                     }
                 }
                 UpdateState::Secondary { qts } => {
@@ -490,8 +535,7 @@ impl Session for SqliteSession {
                             named_params![],
                             |_| Ok(()),
                         )
-                        .await
-                        .unwrap();
+                        .await?;
 
                     if previous.is_some() {
                         transaction
@@ -499,16 +543,14 @@ impl Session for SqliteSession {
                                 "UPDATE update_state SET qts = :qts",
                                 named_params! {":qts": qts},
                             )
-                            .await
-                            .unwrap();
+                            .await?;
                     } else {
                         transaction
                             .execute(
                                 "INSERT INTO update_state VALUES (0, :qts, 0, 0)",
                                 named_params! {":qts": qts},
                             )
-                            .await
-                            .unwrap();
+                            .await?;
                     }
                 }
                 UpdateState::Channel { id, pts } => {
@@ -520,12 +562,12 @@ impl Session for SqliteSession {
                                 ":pts": pts,
                             },
                         )
-                        .await
-                        .unwrap();
+                        .await?;
                 }
             }
 
-            transaction.commit().await.unwrap();
+            transaction.commit().await?;
+            Ok(())
         })
     }
 }
@@ -550,12 +592,12 @@ mod tests {
     async fn do_exercise_sqlite_session() {
         let session = SqliteSession::open(":memory:").await.unwrap();
 
-        assert_eq!(session.home_dc_id(), DEFAULT_DC);
-        session.set_home_dc_id(DEFAULT_DC + 1).await;
-        assert_eq!(session.home_dc_id(), DEFAULT_DC + 1);
+        assert_eq!(session.home_dc_id().unwrap(), DEFAULT_DC);
+        session.set_home_dc_id(DEFAULT_DC + 1).await.unwrap();
+        assert_eq!(session.home_dc_id().unwrap(), DEFAULT_DC + 1);
 
         assert_eq!(
-            session.dc_option(KNOWN_DC_OPTIONS[0].id),
+            session.dc_option(KNOWN_DC_OPTIONS[0].id).unwrap(),
             Some(KNOWN_DC_OPTIONS[0].clone())
         );
         let new_dc_option = DcOption {
@@ -569,32 +611,50 @@ mod tests {
             ipv6: SocketAddrV6::new(Ipv6Addr::from_bits(0), 1, 0, 0),
             auth_key: Some([1; 256]),
         };
-        assert_eq!(session.dc_option(new_dc_option.id), None);
-        session.set_dc_option(&new_dc_option).await;
-        assert_eq!(session.dc_option(new_dc_option.id), Some(new_dc_option));
+        assert_eq!(session.dc_option(new_dc_option.id).unwrap(), None);
+        session.set_dc_option(&new_dc_option).await.unwrap();
+        assert_eq!(
+            session.dc_option(new_dc_option.id).unwrap(),
+            Some(new_dc_option)
+        );
 
-        assert_eq!(session.peer(PeerId::self_user()).await, None);
-        assert_eq!(session.peer(PeerId::user_unchecked(1)).await, None);
+        assert_eq!(session.peer(PeerId::self_user()).await.unwrap(), None);
+        assert_eq!(session.peer(PeerId::user_unchecked(1)).await.unwrap(), None);
         let peer = PeerInfo::User {
             id: 1,
             auth: None,
             bot: Some(true),
             is_self: Some(true),
         };
-        session.cache_peer(&peer).await;
-        assert_eq!(session.peer(PeerId::self_user()).await, Some(peer.clone()));
-        assert_eq!(session.peer(PeerId::user_unchecked(1)).await, Some(peer));
+        session.cache_peer(&peer).await.unwrap();
+        assert_eq!(
+            session.peer(PeerId::self_user()).await.unwrap(),
+            Some(peer.clone())
+        );
+        assert_eq!(
+            session.peer(PeerId::user_unchecked(1)).await.unwrap(),
+            Some(peer)
+        );
 
-        assert_eq!(session.peer(PeerId::channel_unchecked(1)).await, None);
+        assert_eq!(
+            session.peer(PeerId::channel_unchecked(1)).await.unwrap(),
+            None
+        );
         let peer = PeerInfo::Channel {
             id: 1,
             auth: Some(PeerAuth::from_hash(-1)),
             kind: Some(ChannelKind::Broadcast),
         };
-        session.cache_peer(&peer).await;
-        assert_eq!(session.peer(PeerId::channel_unchecked(1)).await, Some(peer));
+        session.cache_peer(&peer).await.unwrap();
+        assert_eq!(
+            session.peer(PeerId::channel_unchecked(1)).await.unwrap(),
+            Some(peer)
+        );
 
-        assert_eq!(session.updates_state().await, UpdatesState::default());
+        assert_eq!(
+            session.updates_state().await.unwrap(),
+            UpdatesState::default()
+        );
         session
             .set_update_state(UpdateState::All(UpdatesState {
                 pts: 1,
@@ -606,22 +666,26 @@ mod tests {
                     ChannelState { id: 7, pts: 8 },
                 ],
             }))
-            .await;
+            .await
+            .unwrap();
         session
             .set_update_state(UpdateState::Primary {
                 pts: 2,
                 date: 4,
                 seq: 5,
             })
-            .await;
+            .await
+            .unwrap();
         session
             .set_update_state(UpdateState::Secondary { qts: 3 })
-            .await;
+            .await
+            .unwrap();
         session
             .set_update_state(UpdateState::Channel { id: 7, pts: 9 })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
-            session.updates_state().await,
+            session.updates_state().await.unwrap(),
             UpdatesState {
                 pts: 2,
                 qts: 3,

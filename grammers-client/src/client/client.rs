@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use grammers_mtsender::SenderPoolHandle;
-use grammers_session::Session;
+use grammers_session::ErasedSession;
 
 pub(crate) struct ClientInner {
-    pub(crate) session: Arc<dyn Session>,
+    pub(crate) session: Arc<ErasedSession>,
     pub(crate) api_id: i32,
     pub(crate) handle: SenderPoolHandle,
     pub(crate) configuration: ClientConfiguration,
@@ -33,8 +33,6 @@ pub(crate) struct ClientInner {
 /// [`Session`]: grammers_session::Session
 #[derive(Clone)]
 pub struct Client(pub(crate) Arc<ClientInner>);
-
-use std::time::Duration;
 
 /// Configuration that controls the [`Client`] behaviour when making requests.
 pub struct ClientConfiguration {
@@ -85,10 +83,7 @@ impl Default for ClientConfiguration {
     /// [`AutoSleep::default`]: super::AutoSleep::default
     fn default() -> Self {
         Self {
-            retry_policy: Box::new(super::AutoSleep {
-                threshold: Duration::from_secs(60),
-                io_errors_as_flood_of: Some(Duration::from_secs(1)),
-            }),
+            retry_policy: Box::new(super::AutoSleep::default()),
             auto_cache_peers: true,
         }
     }

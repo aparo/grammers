@@ -33,7 +33,7 @@ use grammers_session::storages::SqliteSession;
 use simple_logger::SimpleLogger;
 use tokio::{runtime, task};
 
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 const SESSION_FILE: &str = "inline-pagination.session";
 
@@ -138,7 +138,7 @@ async fn async_main() -> Result {
     }
 
     println!("Waiting for messages...");
-    let mut updates = client.stream_updates(updates, Default::default()).await;
+    let mut updates = client.stream_updates(updates, Default::default()).await?;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,

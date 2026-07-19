@@ -149,9 +149,12 @@ pub enum UpdatesLike {
     AffectedChannelMessages {
         affected: tl::types::messages::AffectedMessages,
         channel_id: i64,
+        message_ids: Vec<i32>,
     },
     /// Special-case for requests that lead to users being invited.
     InvitedUsers(tl::types::messages::InvitedUsers),
+    /// Special-case for join requests that contain updates inside a `ChatInviteJoinResultOk`.
+    ChatInviteJoinResult(tl::types::messages::ChatInviteJoinResultOk),
     /// Indicates that the connection was closed and had to be recreated.
     /// This may mean that an update gap now exists and should be resolved.
     ConnectionClosed,

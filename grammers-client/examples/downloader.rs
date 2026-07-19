@@ -27,7 +27,7 @@ use mime_guess::mime;
 use simple_logger::SimpleLogger;
 use tokio::runtime;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SESSION_FILE: &str = "downloader.session";
 
@@ -75,7 +75,7 @@ async fn async_main() -> Result<()> {
         .await?
         .ok_or("no peer with username")?
         .to_ref()
-        .await;
+        .await?;
 
     let peer = maybe_peer.unwrap_or_else(|| panic!("Peer {peer_name} could not be found"));
 

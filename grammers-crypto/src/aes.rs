@@ -13,15 +13,14 @@
 use std::mem;
 
 use aes::Aes256;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 
 /// Encrypt the input plaintext in-place using the AES-IGE mode.
 /// The buffer length must be a multiple of 16.
 pub fn ige_encrypt(buffer: &mut [u8], key: &[u8; 32], iv: &[u8; 32]) {
     assert_eq!(buffer.len() % 16, 0);
 
-    let cipher = Aes256::new(GenericArray::from_slice(key));
+    let cipher = Aes256::new(key.into());
 
     let mut iv1: [u8; 16] = iv[0..16].try_into().unwrap();
     let mut iv2: [u8; 16] = iv[16..32].try_into().unwrap();
@@ -37,7 +36,7 @@ pub fn ige_encrypt(buffer: &mut [u8], key: &[u8; 32], iv: &[u8; 32]) {
             block[i] ^= iv1[i]
         }
 
-        cipher.encrypt_block(GenericArray::from_mut_slice(block));
+        cipher.encrypt_block(block.try_into().unwrap());
 
         // block (ciphertext) XOR iv2 (previous plaintext)
         for i in 0..16 {
@@ -57,7 +56,7 @@ pub fn ige_encrypt(buffer: &mut [u8], key: &[u8; 32], iv: &[u8; 32]) {
 pub fn ige_decrypt(buffer: &mut [u8], key: &[u8; 32], iv: &[u8; 32]) {
     assert_eq!(buffer.len() % 16, 0);
 
-    let cipher = Aes256::new(GenericArray::from_slice(key));
+    let cipher = Aes256::new(key.into());
 
     let mut iv1: [u8; 16] = iv[0..16].try_into().unwrap();
     let mut iv2: [u8; 16] = iv[16..32].try_into().unwrap();
@@ -73,7 +72,7 @@ pub fn ige_decrypt(buffer: &mut [u8], key: &[u8; 32], iv: &[u8; 32]) {
             block[i] ^= iv2[i]
         }
 
-        cipher.decrypt_block(GenericArray::from_mut_slice(block));
+        cipher.decrypt_block(block.try_into().unwrap());
 
         // block (plaintext) XOR iv1 (previous ciphertext)
         for i in 0..16 {

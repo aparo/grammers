@@ -1,6 +1,6 @@
 [package]
 name = "grammers-tl-parser"
-version = "1.2.1"
+version = "1.2.2"
 authors = ["Lonami Exo <totufals@hotmail.com>"]
 license = "MIT OR Apache-2.0"
 description = """
@@ -17,4 +17,4 @@ edition = "2024"
 crc32fast = "1.5.0"
 
 [dev-dependencies]
-toml = "1.0.3"
+toml = "1.1.2"

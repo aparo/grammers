@@ -41,6 +41,9 @@ impl Dialog {
         let peer_id = match dialog {
             tl::enums::Dialog::Dialog(ref dialog) => dialog.peer.clone().into(),
             tl::enums::Dialog::Folder(ref dialog) => dialog.peer.clone().into(),
+            tl::enums::Dialog::Community(ref dialog) => {
+                PeerId::channel_unchecked(dialog.community_id)
+            }
         };
 
         let peer = peers

@@ -50,6 +50,7 @@ pub fn parse_html_message(message: &str) -> (String, Vec<tl::enums::MessageEntit
                     name,
                     self_closing: _,
                     attrs,
+                    had_duplicate_attributes: _,
                 }) => match name {
                     n if n == tag!("b") || n == tag!("strong") => {
                         entities.push(tl::types::MessageEntityBold { offset, length }.into());
@@ -143,6 +144,7 @@ pub fn parse_html_message(message: &str) -> (String, Vec<tl::enums::MessageEntit
                     name,
                     self_closing: _,
                     attrs: _,
+                    had_duplicate_attributes: _,
                 }) => match name {
                     n if n == tag!("b") || n == tag!("strong") => {
                         update_entity_len!(Bold(offset) in entities);

@@ -6,12 +6,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::sync::Mutex;
-
-use futures_core::future::BoxFuture;
+use std::fmt;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::types::{ChannelState, DcOption, PeerId, PeerInfo, UpdateState, UpdatesState};
-use crate::{Session, SessionData};
+use crate::{BoxFuture, Session, SessionData};
 
 /// In-memory session interface.
 ///
@@ -31,56 +30,82 @@ impl From<SessionData> for MemorySession {
     }
 }
 
+#[derive(Debug)]
+pub enum MemorySessionError {
+    Poisoned,
+}
+
+impl std::error::Error for MemorySessionError {}
+
+impl fmt::Display for MemorySessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MemorySessionError::Poisoned => write!(f, "session lock is poisoned"),
+        }
+    }
+}
+
+impl MemorySession {
+    /// Lock the session data, mapping a poisoned mutex into [`MemorySessionError`].
+    fn data(&self) -> Result<MutexGuard<'_, SessionData>, MemorySessionError> {
+        self.0.lock().map_err(|_| MemorySessionError::Poisoned)
+    }
+}
+
 impl Session for MemorySession {
-    fn home_dc_id(&self) -> i32 {
-        self.0.lock().unwrap().home_dc
+    type Error = MemorySessionError;
+
+    fn home_dc_id(&self) -> Result<i32, MemorySessionError> {
+        Ok(self.data()?.home_dc)
     }
 
-    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, ()> {
+    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, Result<(), MemorySessionError>> {
         Box::pin(async move {
-            self.0.lock().unwrap().home_dc = dc_id;
+            self.data()?.home_dc = dc_id;
+            Ok(())
         })
     }
 
-    fn dc_option(&self, dc_id: i32) -> Option<DcOption> {
-        self.0.lock().unwrap().dc_options.get(&dc_id).cloned()
+    fn dc_option(&self, dc_id: i32) -> Result<Option<DcOption>, MemorySessionError> {
+        Ok(self.data()?.dc_options.get(&dc_id).cloned())
     }
 
-    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, ()> {
+    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, Result<(), MemorySessionError>> {
         let dc_option = dc_option.clone();
         Box::pin(async move {
-            self.0
-                .lock()
-                .unwrap()
+            self.data()?
                 .dc_options
                 .insert(dc_option.id, dc_option.clone());
+            Ok(())
         })
     }
 
-    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Option<PeerInfo>> {
-        Box::pin(async move { self.0.lock().unwrap().peer_infos.get(&peer).cloned() })
+    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerInfo>, MemorySessionError>> {
+        Box::pin(async move { Ok(self.data()?.peer_infos.get(&peer).cloned()) })
     }
 
-    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, ()> {
+    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, Result<(), MemorySessionError>> {
         let peer = peer.clone();
         Box::pin(async move {
-            self.0
-                .lock()
-                .unwrap()
+            self.data()?
                 .peer_infos
                 .entry(peer.id())
                 .or_insert_with(|| peer.clone())
                 .extend_info(&peer);
+            Ok(())
         })
     }
 
-    fn updates_state(&self) -> BoxFuture<'_, UpdatesState> {
-        Box::pin(async move { self.0.lock().unwrap().updates_state.clone() })
+    fn updates_state(&self) -> BoxFuture<'_, Result<UpdatesState, MemorySessionError>> {
+        Box::pin(async move { Ok(self.data()?.updates_state.clone()) })
     }
 
-    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, ()> {
+    fn set_update_state(
+        &self,
+        update: UpdateState,
+    ) -> BoxFuture<'_, Result<(), MemorySessionError>> {
         Box::pin(async move {
-            let mut data = self.0.lock().unwrap();
+            let mut data = self.data()?;
 
             match update {
                 UpdateState::All(updates_state) => {
@@ -99,6 +124,8 @@ impl Session for MemorySession {
                     data.updates_state.channels.push(ChannelState { id, pts });
                 }
             }
+
+            Ok(())
         })
     }
 }

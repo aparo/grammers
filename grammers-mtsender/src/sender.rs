@@ -17,7 +17,7 @@ use grammers_mtproto::mtp::{
 use grammers_mtproto::transport::{self, Transport};
 use grammers_mtproto::{MsgId, authentication};
 use grammers_session::updates::UpdatesLike;
-use grammers_tl_types::{self as tl, Deserializable, Identifiable, RemoteCall};
+use grammers_tl_types::{self as tl, Deserializable, RemoteCall};
 use log::{debug, error, info, trace, warn};
 use tl::Serializable;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -88,6 +88,10 @@ fn deserialize_updates_like(update: Vec<u8>) -> tl::deserialize::Result<UpdatesL
                 Ok(UpdatesLike::AffectedMessages(u))
             } else if let Ok(u) = tl::types::messages::InvitedUsers::from_bytes(&update) {
                 Ok(UpdatesLike::InvitedUsers(u))
+            } else if let Ok(tl::enums::messages::ChatInviteJoinResult::Ok(u)) =
+                tl::enums::messages::ChatInviteJoinResult::from_bytes(&update)
+            {
+                Ok(UpdatesLike::ChatInviteJoinResult(u))
             } else {
                 Err(e)
             }
@@ -158,6 +162,14 @@ impl<T: Transport, M: Mtp> Sender<T, M> {
             write_buffer: DequeBuffer::with_capacity(MAXIMUM_DATA, LEADING_BUFFER_SPACE),
             write_head: 0,
         })
+    }
+
+    /// Shutdown the connection.
+    ///
+    /// Any further [`Self::invoke`] or [`Self::step`] will return an error.
+    /// This method is useful if one wants to explicitly handle on-close errors.
+    pub async fn disconnect(&mut self) -> io::Result<()> {
+        self.stream.disconnect().await
     }
 
     /// Serializes the given request, enqueues it to the internal buffer,
@@ -443,25 +455,22 @@ impl<T: Transport, M: Mtp> Sender<T, M> {
                 // Check if the original request targeted a channel (e.g. channels.deleteMessages).
                 // If so, the pts belongs to that channel, not the common/user pts sequence.
                 let channel_id = self.peek_request(msg_id).and_then(|request| {
-                    let body = &request.body;
-                    if body.len() < 4 {
-                        return None;
-                    }
-                    let constructor_id = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-                    if constructor_id != tl::functions::channels::DeleteMessages::CONSTRUCTOR_ID {
-                        return None;
-                    }
-                    // After the 4-byte constructor ID, the first field is InputChannel.
-                    let channel = tl::enums::InputChannel::from_bytes(&body[4..]).ok()?;
-                    match channel {
-                        tl::enums::InputChannel::Channel(c) => Some(c.channel_id),
+                    let request =
+                        match tl::functions::channels::DeleteMessages::from_bytes(&request.body) {
+                            Ok(r) => r,
+                            Err(_) => return None,
+                        };
+
+                    match request.channel {
+                        tl::enums::InputChannel::Channel(c) => Some((c.channel_id, request.id)),
                         _ => None,
                     }
                 });
-                if let Some(channel_id) = channel_id {
+                if let Some((channel_id, message_ids)) = channel_id {
                     updates.push(UpdatesLike::AffectedChannelMessages {
                         affected,
                         channel_id,
+                        message_ids,
                     });
                 } else {
                     updates.push(UpdatesLike::AffectedMessages(affected));
