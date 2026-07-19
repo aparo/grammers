@@ -27,6 +27,7 @@ sqlx = { version = "0.9.0", default-features = false, features = [
   "postgres",
   "macros",
 ], optional = true }
+futures-core = { version = "0.3.33", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_with = { version = "3", features = ["hex"], optional = true }
 
@@ -40,5 +41,5 @@ tokio = { version = "1.52.3", default-features = false, features = [
 [features]
 default = []
 sqlite-storage = ["dep:libsql"]
-postgres-storage = ["dep:sqlx"]
+postgres-storage = ["dep:sqlx", "dep:futures-core"]
 serde = ["dep:serde", "dep:serde_with"]

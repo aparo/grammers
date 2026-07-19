@@ -7,9 +7,10 @@
 // except according to those terms.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::net::AddrParseError;
 use std::sync::Mutex;
 
-use futures_core::future::BoxFuture;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Acquire as _, Row as _};
 
@@ -17,7 +18,7 @@ use crate::types::{
     ChannelKind, ChannelState, DcOption, PeerAuth, PeerId, PeerInfo, PeerKind, UpdateState,
     UpdatesState,
 };
-use crate::{DEFAULT_DC, KNOWN_DC_OPTIONS, Session};
+use crate::{BoxFuture, DEFAULT_DC, KNOWN_DC_OPTIONS, Session};
 
 struct Cache {
     pub home_dc: i32,
@@ -34,6 +35,41 @@ pub struct PostgresSession {
     cache: Mutex<Cache>,
 }
 
+#[derive(Debug)]
+pub enum PostgresSessionError {
+    Poisoned,
+    AddrParse(std::net::AddrParseError),
+    Sql(sqlx::Error),
+    InvalidAuthKeyLength(usize),
+}
+
+impl std::error::Error for PostgresSessionError {}
+
+impl fmt::Display for PostgresSessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PostgresSessionError::Poisoned => write!(f, "session lock is poisoned"),
+            PostgresSessionError::AddrParse(_) => write!(f, "invalid socket address syntax"),
+            PostgresSessionError::Sql(err) => write!(f, "{err}"),
+            PostgresSessionError::InvalidAuthKeyLength(actual) => {
+                write!(f, "invalid auth_key length: expected 256, got {actual}")
+            }
+        }
+    }
+}
+
+impl From<AddrParseError> for PostgresSessionError {
+    fn from(x: AddrParseError) -> Self {
+        Self::AddrParse(x)
+    }
+}
+
+impl From<sqlx::Error> for PostgresSessionError {
+    fn from(x: sqlx::Error) -> Self {
+        Self::Sql(x)
+    }
+}
+
 #[repr(u8)]
 enum PeerSubtype {
     UserSelf = 1,
@@ -42,9 +78,10 @@ enum PeerSubtype {
     Megagroup = 4,
     Broadcast = 8,
     Gigagroup = 12,
+    Community = 16,
 }
 
-async fn migrate(pool: &PgPool) -> sqlx::Result<()> {
+async fn migrate(pool: &PgPool) -> Result<(), PostgresSessionError> {
     let mut tx = pool.begin().await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS grammers_dc_home (
@@ -104,14 +141,13 @@ async fn migrate(pool: &PgPool) -> sqlx::Result<()> {
     Ok(())
 }
 
-async fn load_cache(pool: &PgPool, session_name: &str) -> sqlx::Result<Cache> {
-    let home_dc: i32 = sqlx::query_scalar(
-        "SELECT dc_id FROM grammers_dc_home WHERE session_name = $1 LIMIT 1",
-    )
-    .bind(session_name)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or(DEFAULT_DC);
+async fn load_cache(pool: &PgPool, session_name: &str) -> Result<Cache, PostgresSessionError> {
+    let home_dc: i32 =
+        sqlx::query_scalar("SELECT dc_id FROM grammers_dc_home WHERE session_name = $1 LIMIT 1")
+            .bind(session_name)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(DEFAULT_DC);
 
     let rows = sqlx::query(
         "SELECT dc_id, ipv4, ipv6, auth_key FROM grammers_dc_option WHERE session_name = $1",
@@ -128,9 +164,14 @@ async fn load_cache(pool: &PgPool, session_name: &str) -> sqlx::Result<Cache> {
         let auth_key: Option<Vec<u8>> = row.try_get("auth_key")?;
         let dc_option = DcOption {
             id,
-            ipv4: ipv4.parse().unwrap(),
-            ipv6: ipv6.parse().unwrap(),
-            auth_key: auth_key.map(|k| k.try_into().unwrap()),
+            ipv4: ipv4.parse()?,
+            ipv6: ipv6.parse()?,
+            auth_key: match auth_key {
+                None => None,
+                Some(k) => Some(k.try_into().map_err(|v: Vec<u8>| {
+                    PostgresSessionError::InvalidAuthKeyLength(v.len())
+                })?),
+            },
         };
         dc_options.insert(dc_option.id, dc_option);
     }
@@ -147,14 +188,20 @@ impl PostgresSession {
     ///
     /// `session_name` namespaces all stored data so the same database
     /// can host multiple independent sessions.
-    pub async fn connect(url: &str, session_name: impl Into<String>) -> sqlx::Result<Self> {
+    pub async fn connect(
+        url: &str,
+        session_name: impl Into<String>,
+    ) -> Result<Self, PostgresSessionError> {
         let pool = PgPoolOptions::new().connect(url).await?;
         Self::with_pool(pool, session_name).await
     }
 
     /// Build a session using a caller-provided pool. The schema migration
     /// will be run on the pool if the tables do not exist yet.
-    pub async fn with_pool(pool: PgPool, session_name: impl Into<String>) -> sqlx::Result<Self> {
+    pub async fn with_pool(
+        pool: PgPool,
+        session_name: impl Into<String>,
+    ) -> Result<Self, PostgresSessionError> {
         let session_name = session_name.into();
         migrate(&pool).await?;
         let cache = load_cache(&pool, &session_name).await?;
@@ -172,13 +219,26 @@ impl PostgresSession {
 }
 
 impl Session for PostgresSession {
-    fn home_dc_id(&self) -> i32 {
-        self.cache.lock().unwrap().home_dc
+    type Error = PostgresSessionError;
+
+    fn home_dc_id(&self) -> Result<i32, PostgresSessionError> {
+        Ok(self
+            .cache
+            .lock()
+            .map_err(|_| PostgresSessionError::Poisoned)?
+            .home_dc)
     }
 
-    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, ()> {
-        self.cache.lock().unwrap().home_dc = dc_id;
+    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, Result<(), PostgresSessionError>> {
+        let ok = match self.cache.lock() {
+            Err(_) => Err(PostgresSessionError::Poisoned),
+            Ok(mut x) => {
+                x.home_dc = dc_id;
+                Ok(())
+            }
+        };
         Box::pin(async move {
+            ok?;
             sqlx::query(
                 "INSERT INTO grammers_dc_home (session_name, dc_id) VALUES ($1, $2)
                  ON CONFLICT (session_name) DO UPDATE SET dc_id = EXCLUDED.dc_id",
@@ -186,15 +246,16 @@ impl Session for PostgresSession {
             .bind(&self.session_name)
             .bind(dc_id)
             .execute(&self.pool)
-            .await
-            .unwrap();
+            .await?;
+            Ok(())
         })
     }
 
-    fn dc_option(&self, dc_id: i32) -> Option<DcOption> {
-        self.cache
+    fn dc_option(&self, dc_id: i32) -> Result<Option<DcOption>, PostgresSessionError> {
+        Ok(self
+            .cache
             .lock()
-            .unwrap()
+            .map_err(|_| PostgresSessionError::Poisoned)?
             .dc_options
             .get(&dc_id)
             .cloned()
@@ -203,18 +264,24 @@ impl Session for PostgresSession {
                     .iter()
                     .find(|dc_option| dc_option.id == dc_id)
                     .cloned()
-            })
+            }))
     }
 
-    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, ()> {
-        self.cache
-            .lock()
-            .unwrap()
-            .dc_options
-            .insert(dc_option.id, dc_option.clone());
+    fn set_dc_option(
+        &self,
+        dc_option: &DcOption,
+    ) -> BoxFuture<'_, Result<(), PostgresSessionError>> {
+        let ok = match self.cache.lock() {
+            Err(_) => Err(PostgresSessionError::Poisoned),
+            Ok(mut x) => {
+                x.dc_options.insert(dc_option.id, dc_option.clone());
+                Ok(())
+            }
+        };
 
         let dc_option = dc_option.clone();
         Box::pin(async move {
+            ok?;
             sqlx::query(
                 "INSERT INTO grammers_dc_option (session_name, dc_id, ipv4, ipv6, auth_key)
                  VALUES ($1, $2, $3, $4, $5)
@@ -229,41 +296,19 @@ impl Session for PostgresSession {
             .bind(dc_option.ipv6.to_string())
             .bind(dc_option.auth_key.map(|k| k.to_vec()))
             .execute(&self.pool)
-            .await
-            .unwrap();
+            .await?;
+            Ok(())
         })
     }
 
-    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Option<PeerInfo>> {
+    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerInfo>, PostgresSessionError>> {
         Box::pin(async move {
-            let row = if let Some(peer_id) = peer.bot_api_dialog_id() {
-                sqlx::query(
-                    "SELECT peer_id, hash, subtype FROM grammers_peer_info
-                     WHERE session_name = $1 AND peer_id = $2 LIMIT 1",
-                )
-                .bind(&self.session_name)
-                .bind(peer_id)
-                .fetch_optional(&self.pool)
-                .await
-                .unwrap()
-            } else {
-                sqlx::query(
-                    "SELECT peer_id, hash, subtype FROM grammers_peer_info
-                     WHERE session_name = $1 AND (subtype & $2) <> 0 LIMIT 1",
-                )
-                .bind(&self.session_name)
-                .bind(PeerSubtype::UserSelf as i16)
-                .fetch_optional(&self.pool)
-                .await
-                .unwrap()
-            };
-
-            row.map(|row| {
-                let raw_subtype: Option<i16> = row.try_get("subtype").unwrap();
+            let map_row = |row: sqlx::postgres::PgRow| -> Result<PeerInfo, PostgresSessionError> {
+                let raw_subtype: Option<i16> = row.try_get("subtype")?;
                 let subtype = raw_subtype.map(|s| s as u8);
-                let hash: Option<i64> = row.try_get("hash").unwrap();
-                let stored_peer_id: i64 = row.try_get("peer_id").unwrap();
-                match peer.kind() {
+                let hash: Option<i64> = row.try_get("hash")?;
+                let stored_peer_id: i64 = row.try_get("peer_id")?;
+                Ok(match peer.kind() {
                     PeerKind::User => PeerInfo::User {
                         id: PeerId::user_unchecked(stored_peer_id).bare_id_unchecked(),
                         auth: hash.map(PeerAuth::from_hash),
@@ -288,15 +333,39 @@ impl Session for PostgresSession {
                             }
                         }),
                     },
-                }
+                })
+            };
+
+            Ok(if let Some(peer_id) = peer.bot_api_dialog_id() {
+                sqlx::query(
+                    "SELECT peer_id, hash, subtype FROM grammers_peer_info
+                     WHERE session_name = $1 AND peer_id = $2 LIMIT 1",
+                )
+                .bind(&self.session_name)
+                .bind(peer_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(map_row)
+                .transpose()?
+            } else {
+                sqlx::query(
+                    "SELECT peer_id, hash, subtype FROM grammers_peer_info
+                     WHERE session_name = $1 AND (subtype & $2) <> 0 LIMIT 1",
+                )
+                .bind(&self.session_name)
+                .bind(PeerSubtype::UserSelf as i16)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(map_row)
+                .transpose()?
             })
         })
     }
 
-    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, ()> {
+    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, Result<(), PostgresSessionError>> {
         let peer = peer.clone();
         Box::pin(async move {
-            let peer = if let Some(mut existing_peer) = self.peer(peer.id()).await {
+            let peer = if let Some(mut existing_peer) = self.peer(peer.id()).await? {
                 existing_peer.extend_info(&peer);
                 existing_peer
             } else {
@@ -317,6 +386,7 @@ impl Session for PostgresSession {
                     ChannelKind::Megagroup => PeerSubtype::Megagroup,
                     ChannelKind::Broadcast => PeerSubtype::Broadcast,
                     ChannelKind::Gigagroup => PeerSubtype::Gigagroup,
+                    ChannelKind::Community => PeerSubtype::Community,
                 }),
             };
 
@@ -336,12 +406,12 @@ impl Session for PostgresSession {
             .bind(hash)
             .bind(subtype)
             .execute(&self.pool)
-            .await
-            .unwrap();
+            .await?;
+            Ok(())
         })
     }
 
-    fn updates_state(&self) -> BoxFuture<'_, UpdatesState> {
+    fn updates_state(&self) -> BoxFuture<'_, Result<UpdatesState, PostgresSessionError>> {
         Box::pin(async move {
             let row = sqlx::query(
                 "SELECT pts, qts, date, seq FROM grammers_update_state
@@ -349,15 +419,14 @@ impl Session for PostgresSession {
             )
             .bind(&self.session_name)
             .fetch_optional(&self.pool)
-            .await
-            .unwrap();
+            .await?;
 
             let mut state = if let Some(row) = row {
                 UpdatesState {
-                    pts: row.try_get("pts").unwrap(),
-                    qts: row.try_get("qts").unwrap(),
-                    date: row.try_get("date").unwrap(),
-                    seq: row.try_get("seq").unwrap(),
+                    pts: row.try_get("pts")?,
+                    qts: row.try_get("qts")?,
+                    date: row.try_get("date")?,
+                    seq: row.try_get("seq")?,
                     channels: Vec::new(),
                 }
             } else {
@@ -369,33 +438,36 @@ impl Session for PostgresSession {
             )
             .bind(&self.session_name)
             .fetch_all(&self.pool)
-            .await
-            .unwrap();
+            .await?;
 
             state.channels = channel_rows
                 .into_iter()
-                .map(|row| ChannelState {
-                    id: row.try_get("peer_id").unwrap(),
-                    pts: row.try_get("pts").unwrap(),
+                .map(|row| {
+                    Ok(ChannelState {
+                        id: row.try_get("peer_id")?,
+                        pts: row.try_get("pts")?,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
-            state
+            Ok(state)
         })
     }
 
-    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, ()> {
+    fn set_update_state(
+        &self,
+        update: UpdateState,
+    ) -> BoxFuture<'_, Result<(), PostgresSessionError>> {
         Box::pin(async move {
-            let mut conn = self.pool.acquire().await.unwrap();
-            let mut tx = conn.begin().await.unwrap();
+            let mut conn = self.pool.acquire().await?;
+            let mut tx = conn.begin().await?;
 
             match update {
                 UpdateState::All(updates_state) => {
                     sqlx::query("DELETE FROM grammers_update_state WHERE session_name = $1")
                         .bind(&self.session_name)
                         .execute(&mut *tx)
-                        .await
-                        .unwrap();
+                        .await?;
                     sqlx::query(
                         "INSERT INTO grammers_update_state (session_name, pts, qts, date, seq)
                          VALUES ($1, $2, $3, $4, $5)",
@@ -406,14 +478,12 @@ impl Session for PostgresSession {
                     .bind(updates_state.date)
                     .bind(updates_state.seq)
                     .execute(&mut *tx)
-                    .await
-                    .unwrap();
+                    .await?;
 
                     sqlx::query("DELETE FROM grammers_channel_state WHERE session_name = $1")
                         .bind(&self.session_name)
                         .execute(&mut *tx)
-                        .await
-                        .unwrap();
+                        .await?;
                     for channel in updates_state.channels {
                         sqlx::query(
                             "INSERT INTO grammers_channel_state (session_name, peer_id, pts)
@@ -423,8 +493,7 @@ impl Session for PostgresSession {
                         .bind(channel.id)
                         .bind(channel.pts)
                         .execute(&mut *tx)
-                        .await
-                        .unwrap();
+                        .await?;
                     }
                 }
                 UpdateState::Primary { pts, date, seq } => {
@@ -441,8 +510,7 @@ impl Session for PostgresSession {
                     .bind(date)
                     .bind(seq)
                     .execute(&mut *tx)
-                    .await
-                    .unwrap();
+                    .await?;
                 }
                 UpdateState::Secondary { qts } => {
                     sqlx::query(
@@ -453,8 +521,7 @@ impl Session for PostgresSession {
                     .bind(&self.session_name)
                     .bind(qts)
                     .execute(&mut *tx)
-                    .await
-                    .unwrap();
+                    .await?;
                 }
                 UpdateState::Channel { id, pts } => {
                     sqlx::query(
@@ -466,12 +533,12 @@ impl Session for PostgresSession {
                     .bind(id)
                     .bind(pts)
                     .execute(&mut *tx)
-                    .await
-                    .unwrap();
+                    .await?;
                 }
             }
 
-            tx.commit().await.unwrap();
+            tx.commit().await?;
+            Ok(())
         })
     }
 }
